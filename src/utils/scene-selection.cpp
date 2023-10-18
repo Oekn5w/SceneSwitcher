@@ -6,9 +6,8 @@ namespace advss {
 
 constexpr std::string_view typeSaveName = "type";
 constexpr std::string_view nameSaveName = "name";
-constexpr std::string_view selectionSaveName = "sceneSelection";
 
-void SceneSelection::Save(obs_data_t *obj) const
+void SceneSelection::Save(obs_data_t *obj, const char *name) const
 {
 	auto data = obs_data_create();
 	obs_data_set_int(data, typeSaveName.data(), static_cast<int>(_type));
@@ -33,35 +32,13 @@ void SceneSelection::Save(obs_data_t *obj) const
 	default:
 		break;
 	}
-	obs_data_set_obj(obj, selectionSaveName.data(), data);
+	obs_data_set_obj(obj, name, data);
 	obs_data_release(data);
 }
 
-void SceneSelection::Load(obs_data_t *obj, const char *name,
-			  const char *typeName)
+void SceneSelection::Load(obs_data_t *obj, const char *name)
 {
-	// TODO: Remove in future version
-	if (!obs_data_has_user_value(obj, selectionSaveName.data())) {
-		_type = static_cast<Type>(obs_data_get_int(obj, typeName));
-		auto targetName = obs_data_get_string(obj, name);
-		switch (_type) {
-		case Type::SCENE:
-			_scene = GetWeakSourceByName(targetName);
-			break;
-		case Type::GROUP:
-			_group = GetSceneGroupByName(targetName);
-			break;
-		case Type::PREVIOUS:
-			break;
-		case Type::CURRENT:
-			break;
-		default:
-			break;
-		}
-		return;
-	}
-
-	auto data = obs_data_get_obj(obj, selectionSaveName.data());
+	auto data = obs_data_get_obj(obj, name);
 	_type = static_cast<Type>(obs_data_get_int(data, typeSaveName.data()));
 	auto targetName = obs_data_get_string(data, nameSaveName.data());
 	switch (_type) {

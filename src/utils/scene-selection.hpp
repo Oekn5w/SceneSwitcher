@@ -8,9 +8,8 @@ namespace advss {
 
 class SceneSelection {
 public:
-	void Save(obs_data_t *obj) const;
-	void Load(obs_data_t *obj, const char *name = "scene",
-		  const char *typeName = "sceneType");
+	void Save(obs_data_t *obj, const char *name = "sceneSelection") const;
+	void Load(obs_data_t *obj, const char *name = "sceneSelection");
 
 	enum class Type {
 		SCENE,
