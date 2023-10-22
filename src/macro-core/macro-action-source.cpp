@@ -19,6 +19,8 @@ const static std::map<MacroActionSource::Action, std::string> actionTypes = {
 	 "AdvSceneSwitcher.action.source.type.disable"},
 	{MacroActionSource::Action::SETTINGS,
 	 "AdvSceneSwitcher.action.source.type.settings"},
+	{MacroActionSource::Action::COPY_TRAFO_TO_SETTINGS,
+	 "AdvSceneSwitcher.action.source.type.copyTrafoToSettings"},
 	{MacroActionSource::Action::REFRESH_SETTINGS,
 	 "AdvSceneSwitcher.action.source.type.refreshSettings"},
 	{MacroActionSource::Action::SETTINGS_BUTTON,
@@ -149,6 +151,9 @@ bool MacroActionSource::PerformAction()
 	case Action::SETTINGS:
 		SetSourceSettings(s, _settings);
 		break;
+	case Action::COPY_TRAFO_TO_SETTINGS:
+		CopyTrafoToSettings(s, _trafoSrcSource, _trafoSrcScene);
+		break;
 	case Action::REFRESH_SETTINGS:
 		refreshSourceSettings(s);
 		break;
@@ -207,6 +212,8 @@ bool MacroActionSource::Save(obs_data_t *obj) const
 			 static_cast<int>(_deinterlaceMode));
 	obs_data_set_int(obj, "deinterlaceOrder",
 			 static_cast<int>(_deinterlaceOrder));
+	_trafoSrcScene.Save(obj, "trafoSelectionScene");
+	_trafoSrcSource.Save(obj, "trafoSelectionSource");
 	return true;
 }
 
@@ -221,6 +228,8 @@ bool MacroActionSource::Load(obs_data_t *obj)
 		obs_data_get_int(obj, "deinterlaceMode"));
 	_deinterlaceOrder = static_cast<obs_deinterlace_field_order>(
 		obs_data_get_int(obj, "deinterlaceOrder"));
+	_trafoSrcScene.Load(obj, "trafoSelectionScene");
+	_trafoSrcSource.Load(obj, "trafoSelectionSource");
 	return true;
 }
 
@@ -290,6 +299,11 @@ MacroActionSourceEdit::MacroActionSourceEdit(
 	  _settings(new VariableTextEdit(this)),
 	  _deinterlaceMode(new QComboBox()),
 	  _deinterlaceOrder(new QComboBox()),
+	  _trafoSrcScene(
+		  new SceneSelectionWidget(window(), true, false, false, true)),
+	  _trafoSrcSource(new SceneItemSelectionWidget(parent)),
+	  _trafoSrcLabel(new QLabel(obs_module_text(
+		  "AdvSceneSwitcher.action.source.copyTransform.entry.label"))),
 	  _warning(new QLabel(
 		  obs_module_text("AdvSceneSwitcher.action.source.warning")))
 {
@@ -315,10 +329,22 @@ MacroActionSourceEdit::MacroActionSourceEdit(
 			 this, SLOT(DeinterlaceModeChanged(int)));
 	QWidget::connect(_deinterlaceOrder, SIGNAL(currentIndexChanged(int)),
 			 this, SLOT(DeinterlaceOrderChanged(int)));
+	QWidget::connect(_trafoSrcScene,
+			 SIGNAL(SceneChanged(const SceneSelection &)), this,
+			 SLOT(TrafoSrcSceneChanged(const SceneSelection &)));
+	QWidget::connect(_trafoSrcScene,
+			 SIGNAL(SceneChanged(const SceneSelection &)),
+			 _trafoSrcSource,
+			 SLOT(SceneChanged(const SceneSelection &)));
+	QWidget::connect(
+		_trafoSrcSource,
+		SIGNAL(SceneItemChanged(const SceneItemSelection &)), this,
+		SLOT(TrafoSrcSourceChanged(const SceneItemSelection &)));
 
 	QVBoxLayout *mainLayout = new QVBoxLayout;
 	QHBoxLayout *entryLayout = new QHBoxLayout;
 	QHBoxLayout *buttonLayout = new QHBoxLayout;
+	QHBoxLayout *trafoSelectionLayout = new QHBoxLayout;
 	std::unordered_map<std::string, QWidget *> widgetPlaceholders = {
 		{"{{sources}}", _sources},
 		{"{{actions}}", _actions},
@@ -328,6 +354,12 @@ MacroActionSourceEdit::MacroActionSourceEdit(
 		{"{{deinterlaceMode}}", _deinterlaceMode},
 		{"{{deinterlaceOrder}}", _deinterlaceOrder},
 	};
+	std::unordered_map<std::string, QWidget *>
+		widgetPlaceholdersTrafoSelection = {
+			{"{{label}}", _trafoSrcLabel},
+			{"{{trafoSrcScene}}", _trafoSrcScene},
+			{"{{trafoSrcSource}}", _trafoSrcSource},
+		};
 	PlaceWidgets(obs_module_text("AdvSceneSwitcher.action.source.entry"),
 		     entryLayout, widgetPlaceholders);
 	mainLayout->addLayout(entryLayout);
@@ -336,6 +368,11 @@ MacroActionSourceEdit::MacroActionSourceEdit(
 	buttonLayout->addWidget(_getSettings);
 	buttonLayout->addStretch();
 	mainLayout->addLayout(buttonLayout);
+	PlaceWidgets(
+		obs_module_text(
+			"AdvSceneSwitcher.action.source.copyTransform.entry"),
+		trafoSelectionLayout, widgetPlaceholdersTrafoSelection);
+	mainLayout->addLayout(trafoSelectionLayout);
 	setLayout(mainLayout);
 
 	_entryData = entryData;
@@ -360,6 +397,8 @@ void MacroActionSourceEdit::UpdateEntryData()
 		static_cast<int>(_entryData->_deinterlaceMode)));
 	_deinterlaceOrder->setCurrentIndex(_deinterlaceOrder->findData(
 		static_cast<int>(_entryData->_deinterlaceOrder)));
+	_trafoSrcScene->SetScene(_entryData->_trafoSrcScene);
+	_trafoSrcSource->SetSceneItem(_entryData->_trafoSrcSource);
 	SetWidgetVisibility();
 }
 
@@ -447,6 +486,28 @@ void MacroActionSourceEdit::DeinterlaceOrderChanged(int idx)
 			_deinterlaceOrder->itemData(idx).toInt());
 }
 
+void MacroActionSourceEdit::TrafoSrcSceneChanged(const SceneSelection &s)
+{
+	if (_loading || !_entryData) {
+		return;
+	}
+
+	auto lock = LockContext();
+	_entryData->_trafoSrcScene = s;
+}
+
+void MacroActionSourceEdit::TrafoSrcSourceChanged(const SceneItemSelection &item)
+{
+	if (_loading || !_entryData) {
+		return;
+	}
+
+	auto lock = LockContext();
+	_entryData->_trafoSrcSource = item;
+	adjustSize();
+	updateGeometry();
+}
+
 void MacroActionSourceEdit::SetWidgetVisibility()
 {
 	const bool showSettings = _entryData->_action ==
@@ -454,6 +515,9 @@ void MacroActionSourceEdit::SetWidgetVisibility()
 	const bool showWarning =
 		_entryData->_action == MacroActionSource::Action::ENABLE ||
 		_entryData->_action == MacroActionSource::Action::DISABLE;
+	const bool showTrafoSrcSelection =
+		_entryData->_action ==
+		MacroActionSource::Action::COPY_TRAFO_TO_SETTINGS;
 	_settings->setVisible(showSettings);
 	_getSettings->setVisible(showSettings);
 	_warning->setVisible(showWarning);
@@ -466,6 +530,9 @@ void MacroActionSourceEdit::SetWidgetVisibility()
 	_deinterlaceOrder->setVisible(
 		_entryData->_action ==
 		MacroActionSource::Action::DEINTERLACE_FIELD_ORDER);
+	_trafoSrcLabel->setVisible(showTrafoSrcSelection);
+	_trafoSrcScene->setVisible(showTrafoSrcSelection);
+	_trafoSrcSource->setVisible(showTrafoSrcSelection);
 	adjustSize();
 	updateGeometry();
 }

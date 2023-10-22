@@ -2,6 +2,8 @@
 #include "macro-action-edit.hpp"
 #include "variable-text-edit.hpp"
 #include "source-selection.hpp"
+#include "scene-selection.hpp"
+#include "scene-item-selection.hpp"
 
 #include <QSpinBox>
 #include <QLabel>
@@ -39,11 +41,14 @@ public:
 	obs_deinterlace_mode _deinterlaceMode = OBS_DEINTERLACE_MODE_DISABLE;
 	obs_deinterlace_field_order _deinterlaceOrder =
 		OBS_DEINTERLACE_FIELD_ORDER_TOP;
+	SceneSelection _trafoSrcScene;
+	SceneItemSelection _trafoSrcSource;
 
 	enum class Action {
 		ENABLE,
 		DISABLE,
 		SETTINGS,
+		COPY_TRAFO_TO_SETTINGS,
 		REFRESH_SETTINGS,
 		SETTINGS_BUTTON,
 		DEINTERLACE_MODE,
@@ -83,6 +88,8 @@ private slots:
 	void SettingsChanged();
 	void DeinterlaceModeChanged(int);
 	void DeinterlaceOrderChanged(int);
+	void TrafoSrcSceneChanged(const SceneSelection &);
+	void TrafoSrcSourceChanged(const SceneItemSelection &);
 signals:
 	void HeaderInfoChanged(const QString &);
 
@@ -94,6 +101,9 @@ protected:
 	VariableTextEdit *_settings;
 	QComboBox *_deinterlaceMode;
 	QComboBox *_deinterlaceOrder;
+	SceneSelectionWidget *_trafoSrcScene;
+	SceneItemSelectionWidget *_trafoSrcSource;
+	QLabel *_trafoSrcLabel;
 	QLabel *_warning;
 	std::shared_ptr<MacroActionSource> _entryData;
 

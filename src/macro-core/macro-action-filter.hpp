@@ -3,6 +3,8 @@
 #include "variable-text-edit.hpp"
 #include "source-selection.hpp"
 #include "filter-selection.hpp"
+#include "scene-selection.hpp"
+#include "scene-item-selection.hpp"
 
 #include <QComboBox>
 #include <QSpinBox>
@@ -29,12 +31,15 @@ public:
 		DISABLE,
 		TOGGLE,
 		SETTINGS,
+		COPY_TRAFO_TO_SETTINGS,
 	};
 
 	SourceSelection _source;
 	FilterSelection _filter;
 	Action _action = Action::ENABLE;
 	StringVariable _settings = "";
+	SceneSelection _trafoSrcScene;
+	SceneItemSelection _trafoSrcSource;
 
 private:
 	static bool _registered;
@@ -63,6 +68,8 @@ private slots:
 	void ActionChanged(int value);
 	void GetSettingsClicked();
 	void SettingsChanged();
+	void TrafoSrcSceneChanged(const SceneSelection &);
+	void TrafoSrcSourceChanged(const SceneItemSelection &);
 signals:
 	void HeaderInfoChanged(const QString &);
 
@@ -70,12 +77,15 @@ protected:
 	SourceSelectionWidget *_sources;
 	FilterSelectionWidget *_filters;
 	QComboBox *_actions;
+	SceneSelectionWidget *_trafoSrcScene;
+	SceneItemSelectionWidget *_trafoSrcSource;
+	QLabel *_trafoSrcLabel;
 	QPushButton *_getSettings;
 	VariableTextEdit *_settings;
 	std::shared_ptr<MacroActionFilter> _entryData;
 
 private:
-	void SetWidgetVisibility(bool);
+	void SetWidgetVisibility();
 	bool _loading = true;
 };
 

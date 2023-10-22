@@ -19,6 +19,8 @@ const static std::map<MacroActionFilter::Action, std::string> actionTypes = {
 	 "AdvSceneSwitcher.action.filter.type.toggle"},
 	{MacroActionFilter::Action::SETTINGS,
 	 "AdvSceneSwitcher.action.filter.type.settings"},
+	{MacroActionFilter::Action::COPY_TRAFO_TO_SETTINGS,
+	 "AdvSceneSwitcher.action.filter.type.copyTrafoToSettings"},
 };
 
 static void CopyTrafoToSettings(obs_source_t *s_target,
@@ -35,34 +37,33 @@ static void CopyTrafoToSettings(obs_source_t *s_target,
 		obs_data_create_from_json(trafoJSON.c_str()));
 }
 
-static void performActionHelper(MacroActionFilter::Action action,
-				const OBSWeakSource &filter,
-				const StringVariable &settings)
-{
-	OBSSourceAutoRelease source = obs_weak_source_get_source(filter);
-	switch (action) {
-	case MacroActionFilter::Action::ENABLE:
-		obs_source_set_enabled(source, true);
-		break;
-	case MacroActionFilter::Action::DISABLE:
-		obs_source_set_enabled(source, false);
-		break;
-	case MacroActionFilter::Action::TOGGLE:
-		obs_source_set_enabled(source, !obs_source_enabled(source));
-		break;
-	case MacroActionFilter::Action::SETTINGS:
-		SetSourceSettings(source, settings);
-		break;
-	default:
-		break;
-	}
-}
-
 bool MacroActionFilter::PerformAction()
 {
 	auto filters = _filter.GetFilters(_source);
 	for (const auto &filter : filters) {
-		performActionHelper(_action, filter, _settings);
+		OBSSourceAutoRelease source =
+			obs_weak_source_get_source(filter);
+		switch (_action) {
+		case MacroActionFilter::Action::ENABLE:
+			obs_source_set_enabled(source, true);
+			break;
+		case MacroActionFilter::Action::DISABLE:
+			obs_source_set_enabled(source, false);
+			break;
+		case MacroActionFilter::Action::TOGGLE:
+			obs_source_set_enabled(source,
+					       !obs_source_enabled(source));
+			break;
+		case MacroActionFilter::Action::SETTINGS:
+			SetSourceSettings(source, _settings);
+			break;
+		case MacroActionFilter::Action::COPY_TRAFO_TO_SETTINGS:
+			CopyTrafoToSettings(source, _trafoSrcSource,
+					    _trafoSrcScene);
+			break;
+		default:
+			break;
+		}
 	}
 	return true;
 }
@@ -89,6 +90,8 @@ bool MacroActionFilter::Save(obs_data_t *obj) const
 	obs_data_set_int(obj, "action", static_cast<int>(_action));
 	_settings.Save(obj, "settings");
 	obs_data_set_int(obj, "version", 1);
+	_trafoSrcScene.Save(obj, "trafoSelectionScene");
+	_trafoSrcSource.Save(obj, "trafoSelectionSource");
 	return true;
 }
 
@@ -109,6 +112,8 @@ bool MacroActionFilter::Load(obs_data_t *obj)
 		_action = static_cast<Action>(obs_data_get_int(obj, "action"));
 	}
 	_settings.Load(obj, "settings");
+	_trafoSrcScene.Load(obj, "trafoSelectionScene");
+	_trafoSrcSource.Load(obj, "trafoSelectionSource");
 	return true;
 }
 
@@ -133,6 +138,11 @@ MacroActionFilterEdit::MacroActionFilterEdit(
 	  _sources(new SourceSelectionWidget(this, QStringList(), true)),
 	  _filters(new FilterSelectionWidget(this, _sources, true)),
 	  _actions(new QComboBox()),
+	  _trafoSrcScene(
+		  new SceneSelectionWidget(window(), true, false, false, true)),
+	  _trafoSrcSource(new SceneItemSelectionWidget(parent)),
+	  _trafoSrcLabel(new QLabel(obs_module_text(
+		  "AdvSceneSwitcher.action.filter.copyTransform.entry.label"))),
 	  _getSettings(new QPushButton(obs_module_text(
 		  "AdvSceneSwitcher.action.filter.getSettings"))),
 	  _settings(new VariableTextEdit(this))
@@ -156,6 +166,17 @@ MacroActionFilterEdit::MacroActionFilterEdit(
 			 SLOT(GetSettingsClicked()));
 	QWidget::connect(_settings, SIGNAL(textChanged()), this,
 			 SLOT(SettingsChanged()));
+	QWidget::connect(_trafoSrcScene,
+			 SIGNAL(SceneChanged(const SceneSelection &)), this,
+			 SLOT(TrafoSrcSceneChanged(const SceneSelection &)));
+	QWidget::connect(_trafoSrcScene,
+			 SIGNAL(SceneChanged(const SceneSelection &)),
+			 _trafoSrcSource,
+			 SLOT(SceneChanged(const SceneSelection &)));
+	QWidget::connect(
+		_trafoSrcSource,
+		SIGNAL(SceneItemChanged(const SceneItemSelection &)), this,
+		SLOT(TrafoSrcSourceChanged(const SceneItemSelection &)));
 
 	QHBoxLayout *entryLayout = new QHBoxLayout;
 
@@ -172,10 +193,23 @@ MacroActionFilterEdit::MacroActionFilterEdit(
 	buttonLayout->addStretch();
 	buttonLayout->setContentsMargins(0, 0, 0, 0);
 
+	QHBoxLayout *trafoSelectionLayout = new QHBoxLayout;
+	std::unordered_map<std::string, QWidget *>
+		widgetPlaceholdersTrafoSelection = {
+			{"{{label}}", _trafoSrcLabel},
+			{"{{trafoSrcScene}}", _trafoSrcScene},
+			{"{{trafoSrcSource}}", _trafoSrcSource},
+		};
+	PlaceWidgets(
+		obs_module_text(
+			"AdvSceneSwitcher.action.source.copyTransform.entry"),
+		trafoSelectionLayout, widgetPlaceholdersTrafoSelection);
+
 	QVBoxLayout *mainLayout = new QVBoxLayout;
 	mainLayout->addLayout(entryLayout);
 	mainLayout->addWidget(_settings);
 	mainLayout->addLayout(buttonLayout);
+	mainLayout->addLayout(trafoSelectionLayout);
 	setLayout(mainLayout);
 
 	_entryData = entryData;
@@ -193,8 +227,9 @@ void MacroActionFilterEdit::UpdateEntryData()
 	_sources->SetSource(_entryData->_source);
 	_filters->SetFilter(_entryData->_source, _entryData->_filter);
 	_settings->setPlainText(_entryData->_settings);
-	SetWidgetVisibility(_entryData->_action ==
-			    MacroActionFilter::Action::SETTINGS);
+	_trafoSrcScene->SetScene(_entryData->_trafoSrcScene);
+	_trafoSrcSource->SetSceneItem(_entryData->_trafoSrcSource);
+	SetWidgetVisibility();
 
 	adjustSize();
 	updateGeometry();
@@ -230,8 +265,7 @@ void MacroActionFilterEdit::ActionChanged(int value)
 
 	auto lock = LockContext();
 	_entryData->_action = static_cast<MacroActionFilter::Action>(value);
-	SetWidgetVisibility(_entryData->_action ==
-			    MacroActionFilter::Action::SETTINGS);
+	SetWidgetVisibility();
 }
 
 void MacroActionFilterEdit::GetSettingsClicked()
@@ -258,10 +292,40 @@ void MacroActionFilterEdit::SettingsChanged()
 	updateGeometry();
 }
 
-void MacroActionFilterEdit::SetWidgetVisibility(bool showSettings)
+void MacroActionFilterEdit::TrafoSrcSceneChanged(const SceneSelection &s)
 {
+	if (_loading || !_entryData) {
+		return;
+	}
+
+	auto lock = LockContext();
+	_entryData->_trafoSrcScene = s;
+}
+
+void MacroActionFilterEdit::TrafoSrcSourceChanged(const SceneItemSelection &item)
+{
+	if (_loading || !_entryData) {
+		return;
+	}
+
+	auto lock = LockContext();
+	_entryData->_trafoSrcSource = item;
+	adjustSize();
+	updateGeometry();
+}
+
+void MacroActionFilterEdit::SetWidgetVisibility()
+{
+	const bool showSettings = _entryData->_action ==
+				  MacroActionFilter::Action::SETTINGS;
+	const bool showTrafoSrcSelection =
+		_entryData->_action ==
+		MacroActionFilter::Action::COPY_TRAFO_TO_SETTINGS;
 	_settings->setVisible(showSettings);
 	_getSettings->setVisible(showSettings);
+	_trafoSrcLabel->setVisible(showTrafoSrcSelection);
+	_trafoSrcScene->setVisible(showTrafoSrcSelection);
+	_trafoSrcSource->setVisible(showTrafoSrcSelection);
 	adjustSize();
 	updateGeometry();
 }
