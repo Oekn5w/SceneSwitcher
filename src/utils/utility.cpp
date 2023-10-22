@@ -156,13 +156,43 @@ getNextDelim(const std::string &text,
 	return res;
 }
 
-std::pair<double, double> getSceneItemSize(obs_scene_item *item)
+struct vec2 getSceneItemSize(obs_scene_item *item)
 {
-	std::pair<double, double> size;
+	struct vec2 size;
 	obs_source_t *source = obs_sceneitem_get_source(item);
-	size.first = double(obs_source_get_width(source));
-	size.second = double(obs_source_get_height(source));
+	size.x = float(obs_source_get_width(source));
+	size.y = float(obs_source_get_height(source));
 	return size;
+}
+
+struct vec2 getAlignedCoordsExtrema(const float &position,
+				    const float &dimension,
+				    float alignmentNumber)
+{
+	static_assert(
+		(OBS_ALIGN_CENTER == 0x00) && (OBS_ALIGN_LEFT == 0x01) &&
+			(OBS_ALIGN_RIGHT == 0x02) &&
+			(OBS_ALIGN_TOP == (0x01 << 2)) &&
+			(OBS_ALIGN_BOTTOM == (0x02 << 2)),
+		"Quadratic coefficents set for calculating the resulting boundaries "
+		"of transformations do not match OBS alignment values! Update the "
+		"coefficents");
+
+	struct vec2 extrema;
+	float factorDim;
+	constexpr float opMinSquare = -0.75f;
+	constexpr float opMinLinear = 1.25f;
+	constexpr float opMinConst = -0.5f;
+	factorDim = opMinSquare * alignmentNumber * alignmentNumber +
+		    opMinLinear * alignmentNumber + opMinConst;
+	extrema.ptr[0] = roundf(position + factorDim * dimension);
+	constexpr float opMaxSquare = -0.75f;
+	constexpr float opMaxLinear = 1.25f;
+	constexpr float opMaxConst = 0.5f;
+	factorDim = opMaxSquare * alignmentNumber * alignmentNumber +
+		    opMaxLinear * alignmentNumber + opMaxConst;
+	extrema.ptr[1] = roundf(position + factorDim * dimension);
+	return extrema;
 }
 
 std::string GetSceneItemTransform(obs_scene_item *item)
@@ -175,10 +205,30 @@ std::string GetSceneItemTransform(obs_scene_item *item)
 
 	auto data = obs_data_create();
 	SaveTransformState(data, info, crop);
+	struct vec2 scaledSize;
+	scaledSize.x = fmaxf(0.0f, roundf((size.x - (float)(crop.left) -
+					   (float)(crop.right)) *
+					  info.scale.x));
+	scaledSize.y = fmaxf(0.0f, roundf((size.y - (float)(crop.top) -
+					   (float)(crop.bottom)) *
+					  info.scale.y));
 	obs_data_t *obj = obs_data_create();
-	obs_data_set_double(obj, "width", size.first * info.scale.x);
-	obs_data_set_double(obj, "height", size.second * info.scale.y);
+	obs_data_set_double(obj, "width", scaledSize.x);
+	obs_data_set_double(obj, "height", scaledSize.y);
 	obs_data_set_obj(data, "size", obj);
+	obs_data_release(obj);
+	struct vec2 extrema;
+	obj = obs_data_create();
+	extrema =
+		getAlignedCoordsExtrema(info.pos.y, scaledSize.y,
+					(float)((info.alignment >> 2) & 0x03));
+	obs_data_set_double(obj, "top", extrema.x);
+	obs_data_set_double(obj, "bottom", extrema.y);
+	extrema = getAlignedCoordsExtrema(info.pos.x, scaledSize.x,
+					  (float)(info.alignment & 0x03));
+	obs_data_set_double(obj, "left", extrema.x);
+	obs_data_set_double(obj, "right", extrema.y);
+	obs_data_set_obj(data, "boundsNoRot", obj);
 	obs_data_release(obj);
 	auto json = std::string(obs_data_get_json(data));
 	obs_data_release(data);
@@ -479,10 +529,14 @@ void LoadTransformState(obs_data_t *obj, struct obs_transform_info &info,
 	info.bounds_alignment =
 		(uint32_t)obs_data_get_int(obj, "bounds_alignment");
 	obs_data_get_vec2(obj, "bounds", &info.bounds);
-	crop.top = (int)obs_data_get_int(obj, "top");
-	crop.bottom = (int)obs_data_get_int(obj, "bottom");
-	crop.left = (int)obs_data_get_int(obj, "left");
-	crop.right = (int)obs_data_get_int(obj, "right");
+	auto cropObj = obs_data_get_obj(obj, "crop");
+	if (cropObj) {
+		crop.top = (int)obs_data_get_int(cropObj, "top");
+		crop.bottom = (int)obs_data_get_int(cropObj, "bottom");
+		crop.left = (int)obs_data_get_int(cropObj, "left");
+		crop.right = (int)obs_data_get_int(cropObj, "right");
+		obs_data_release(cropObj);
+	}
 }
 
 bool SaveTransformState(obs_data_t *obj, const struct obs_transform_info &info,
@@ -503,11 +557,13 @@ bool SaveTransformState(obs_data_t *obj, const struct obs_transform_info &info,
 	obs_data_set_int(obj, "bounds_type", bounds_type);
 	obs_data_set_vec2(obj, "bounds", &bounds);
 	obs_data_set_int(obj, "bounds_alignment", bounds_alignment);
-	obs_data_set_int(obj, "top", crop.top);
-	obs_data_set_int(obj, "bottom", crop.bottom);
-	obs_data_set_int(obj, "left", crop.left);
-	obs_data_set_int(obj, "right", crop.right);
-
+	obs_data_t *cropObj = obs_data_create();
+	obs_data_set_int(cropObj, "top", crop.top);
+	obs_data_set_int(cropObj, "bottom", crop.bottom);
+	obs_data_set_int(cropObj, "left", crop.left);
+	obs_data_set_int(cropObj, "right", crop.right);
+	obs_data_set_obj(obj, "crop", cropObj);
+	obs_data_release(cropObj);
 	return true;
 }
 
