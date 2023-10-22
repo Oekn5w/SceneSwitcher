@@ -21,6 +21,20 @@ const static std::map<MacroActionFilter::Action, std::string> actionTypes = {
 	 "AdvSceneSwitcher.action.filter.type.settings"},
 };
 
+static void CopyTrafoToSettings(obs_source_t *s_target,
+				SceneItemSelection &trafoSrc,
+				SceneSelection &trafoScene)
+{
+	auto sTrafoSIs = trafoSrc.GetSceneItems(trafoScene);
+	if (sTrafoSIs.empty()) {
+		return;
+	}
+	auto trafoJSON = GetSceneItemTransform(sTrafoSIs[0]);
+	InsertDataToSourceSettings(
+		s_target, "transformationInfo",
+		obs_data_create_from_json(trafoJSON.c_str()));
+}
+
 static void performActionHelper(MacroActionFilter::Action action,
 				const OBSWeakSource &filter,
 				const StringVariable &settings)

@@ -122,6 +122,20 @@ static bool isInteractable(obs_source_t *source)
 	return (flags & OBS_SOURCE_INTERACTION) != 0;
 }
 
+static void CopyTrafoToSettings(obs_source_t *s_target,
+				SceneItemSelection &trafoSrc,
+				SceneSelection &trafoScene)
+{
+	auto sTrafoSIs = trafoSrc.GetSceneItems(trafoScene);
+	if (sTrafoSIs.empty()) {
+		return;
+	}
+	auto trafoJSON = GetSceneItemTransform(sTrafoSIs[0]);
+	InsertDataToSourceSettings(
+		s_target, "transformationInfo",
+		obs_data_create_from_json(trafoJSON.c_str()));
+}
+
 bool MacroActionSource::PerformAction()
 {
 	auto s = obs_weak_source_get_source(_source.GetSource());

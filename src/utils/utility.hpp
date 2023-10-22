@@ -31,6 +31,8 @@ OBSWeakSource GetWeakFilterByName(OBSWeakSource source, const char *name);
 OBSWeakSource GetWeakFilterByQString(OBSWeakSource source, const QString &name);
 std::string GetSourceSettings(OBSWeakSource ws);
 void SetSourceSettings(obs_source_t *s, const std::string &settings);
+void InsertDataToSourceSettings(obs_source_t *s, const char *name,
+				obs_data_t *data);
 bool CompareSourceSettings(const OBSWeakSource &source,
 			   const std::string &settings,
 			   const RegexConfig &regex);

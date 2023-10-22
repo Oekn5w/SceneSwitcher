@@ -397,6 +397,15 @@ void SetSourceSettings(obs_source_t *s, const std::string &settings)
 	obs_data_release(data);
 }
 
+void InsertDataToSourceSettings(obs_source_t *s, const char *name,
+				obs_data_t *data)
+{
+	obs_data_t *settings = obs_source_get_settings(s);
+	obs_data_set_obj(settings, name, data);
+	obs_source_update(s, settings);
+	obs_data_release(settings);
+}
+
 // Match json1 with pattern json2
 bool MatchJson(const std::string &json1, const std::string &json2,
 	       const RegexConfig &regex)
