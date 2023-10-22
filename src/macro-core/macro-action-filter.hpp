@@ -12,6 +12,15 @@
 
 namespace advss {
 
+struct FilterSettingButton {
+	bool Save(obs_data_t *obj) const;
+	bool Load(obs_data_t *obj);
+	std::string ToString() const;
+
+	std::string id = "";
+	std::string description = "";
+};
+
 class MacroActionFilter : public MacroAction {
 public:
 	MacroActionFilter(Macro *m) : MacroAction(m) {}
@@ -31,11 +40,13 @@ public:
 		DISABLE,
 		TOGGLE,
 		SETTINGS,
+		SETTINGS_BUTTON,
 		COPY_TRAFO_TO_SETTINGS,
 	};
 
 	SourceSelection _source;
 	FilterSelection _filter;
+	FilterSettingButton _button;
 	Action _action = Action::ENABLE;
 	StringVariable _settings = "";
 	SceneSelection _trafoSrcScene;
@@ -66,6 +77,7 @@ private slots:
 	void SourceChanged(const SourceSelection &);
 	void FilterChanged(const FilterSelection &);
 	void ActionChanged(int value);
+	void ButtonChanged(int idx);
 	void GetSettingsClicked();
 	void SettingsChanged();
 	void TrafoSrcSceneChanged(const SceneSelection &);
@@ -77,6 +89,7 @@ protected:
 	SourceSelectionWidget *_sources;
 	FilterSelectionWidget *_filters;
 	QComboBox *_actions;
+	QComboBox *_settingsButtons;
 	SceneSelectionWidget *_trafoSrcScene;
 	SceneItemSelectionWidget *_trafoSrcSource;
 	QLabel *_trafoSrcLabel;

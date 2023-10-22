@@ -1,6 +1,8 @@
 #include "macro-action-filter.hpp"
 #include "utility.hpp"
 
+Q_DECLARE_METATYPE(advss::FilterSettingButton);
+
 namespace advss {
 
 const std::string MacroActionFilter::id = "filter";
@@ -19,9 +21,43 @@ const static std::map<MacroActionFilter::Action, std::string> actionTypes = {
 	 "AdvSceneSwitcher.action.filter.type.toggle"},
 	{MacroActionFilter::Action::SETTINGS,
 	 "AdvSceneSwitcher.action.filter.type.settings"},
+	{MacroActionFilter::Action::SETTINGS_BUTTON,
+	 "AdvSceneSwitcher.action.filter.type.pressSettingsButton"},
 	{MacroActionFilter::Action::COPY_TRAFO_TO_SETTINGS,
 	 "AdvSceneSwitcher.action.filter.type.copyTrafoToSettings"},
 };
+
+static std::vector<FilterSettingButton> getFilterButtons(OBSWeakSource source)
+{
+	auto s = obs_weak_source_get_source(source);
+	std::vector<FilterSettingButton> buttons;
+	obs_properties_t *sourceProperties = obs_source_properties(s);
+	auto it = obs_properties_first(sourceProperties);
+	do {
+		if (!it || obs_property_get_type(it) != OBS_PROPERTY_BUTTON) {
+			continue;
+		}
+		FilterSettingButton button = {obs_property_name(it),
+					      obs_property_description(it)};
+		buttons.emplace_back(button);
+	} while (obs_property_next(&it));
+	obs_source_release(s);
+	return buttons;
+}
+
+static void pressFilterButton(const FilterSettingButton &button,
+			      obs_source_t *source)
+{
+	obs_properties_t *sourceProperties = obs_source_properties(source);
+	obs_property_t *property =
+		obs_properties_get(sourceProperties, button.id.c_str());
+	if (!obs_property_button_clicked(property, source)) {
+		blog(LOG_WARNING,
+		     "Failed to press filter settings button '%s' for %s",
+		     button.id.c_str(), obs_source_get_name(source));
+	}
+	obs_properties_destroy(sourceProperties);
+}
 
 static void CopyTrafoToSettings(obs_source_t *s_target,
 				SceneItemSelection &trafoSrc,
@@ -57,6 +93,9 @@ bool MacroActionFilter::PerformAction()
 		case MacroActionFilter::Action::SETTINGS:
 			SetSourceSettings(source, _settings);
 			break;
+		case MacroActionFilter::Action::SETTINGS_BUTTON:
+			pressFilterButton(_button, source);
+			break;
 		case MacroActionFilter::Action::COPY_TRAFO_TO_SETTINGS:
 			CopyTrafoToSettings(source, _trafoSrcSource,
 					    _trafoSrcScene);
@@ -87,6 +126,7 @@ bool MacroActionFilter::Save(obs_data_t *obj) const
 	MacroAction::Save(obj);
 	_source.Save(obj);
 	_filter.Save(obj, "filter");
+	_button.Save(obj);
 	obs_data_set_int(obj, "action", static_cast<int>(_action));
 	_settings.Save(obj, "settings");
 	obs_data_set_int(obj, "version", 1);
@@ -100,6 +140,7 @@ bool MacroActionFilter::Load(obs_data_t *obj)
 	MacroAction::Load(obj);
 	_source.Load(obj);
 	_filter.Load(obj, _source, "filter");
+	_button.Load(obj);
 	// TODO: Remove this fallback in future version
 	if (!obs_data_has_user_value(obj, "version")) {
 		const auto value = obs_data_get_int(obj, "action");
@@ -132,12 +173,30 @@ static inline void populateActionSelection(QComboBox *list)
 	}
 }
 
+static inline void populateFilterButtonSelection(QComboBox *list,
+						 OBSWeakSource source)
+{
+	list->clear();
+	auto buttons = getFilterButtons(source);
+	if (buttons.empty()) {
+		list->addItem(obs_module_text(
+			"AdvSceneSwitcher.action.source.noSettingsButtons"));
+	}
+
+	for (const auto &button : buttons) {
+		QVariant value;
+		value.setValue(button);
+		list->addItem(QString::fromStdString(button.ToString()), value);
+	}
+}
+
 MacroActionFilterEdit::MacroActionFilterEdit(
 	QWidget *parent, std::shared_ptr<MacroActionFilter> entryData)
 	: QWidget(parent),
 	  _sources(new SourceSelectionWidget(this, QStringList(), true)),
 	  _filters(new FilterSelectionWidget(this, _sources, true)),
 	  _actions(new QComboBox()),
+	  _settingsButtons(new QComboBox()),
 	  _trafoSrcScene(
 		  new SceneSelectionWidget(window(), true, false, false, true)),
 	  _trafoSrcSource(new SceneItemSelectionWidget(parent)),
@@ -156,6 +215,8 @@ MacroActionFilterEdit::MacroActionFilterEdit(
 
 	QWidget::connect(_actions, SIGNAL(currentIndexChanged(int)), this,
 			 SLOT(ActionChanged(int)));
+	QWidget::connect(_settingsButtons, SIGNAL(currentIndexChanged(int)),
+			 this, SLOT(ButtonChanged(int)));
 	QWidget::connect(_sources,
 			 SIGNAL(SourceChanged(const SourceSelection &)), this,
 			 SLOT(SourceChanged(const SourceSelection &)));
@@ -181,8 +242,11 @@ MacroActionFilterEdit::MacroActionFilterEdit(
 	QHBoxLayout *entryLayout = new QHBoxLayout;
 
 	std::unordered_map<std::string, QWidget *> widgetPlaceholders = {
-		{"{{sources}}", _sources},         {"{{filters}}", _filters},
-		{"{{actions}}", _actions},         {"{{settings}}", _settings},
+		{"{{sources}}", _sources},
+		{"{{filters}}", _filters},
+		{"{{actions}}", _actions},
+		{"{{settings}}", _settings},
+		{"{{settingsButtons}}", _settingsButtons},
 		{"{{getSettings}}", _getSettings},
 	};
 	PlaceWidgets(obs_module_text("AdvSceneSwitcher.action.filter.entry"),
@@ -223,6 +287,9 @@ void MacroActionFilterEdit::UpdateEntryData()
 		return;
 	}
 
+	populateFilterButtonSelection(
+		_settingsButtons,
+		_entryData->_filter.GetFilters(_entryData->_source)[0]);
 	_actions->setCurrentIndex(static_cast<int>(_entryData->_action));
 	_sources->SetSource(_entryData->_source);
 	_filters->SetFilter(_entryData->_source, _entryData->_filter);
@@ -241,8 +308,13 @@ void MacroActionFilterEdit::SourceChanged(const SourceSelection &source)
 		return;
 	}
 
-	auto lock = LockContext();
-	_entryData->_source = source;
+	{
+		auto lock = LockContext();
+		_entryData->_source = source;
+	}
+	populateFilterButtonSelection(
+		_settingsButtons,
+		_entryData->_filter.GetFilters(_entryData->_source)[0]);
 }
 
 void MacroActionFilterEdit::FilterChanged(const FilterSelection &filter)
@@ -251,8 +323,13 @@ void MacroActionFilterEdit::FilterChanged(const FilterSelection &filter)
 		return;
 	}
 
-	auto lock = LockContext();
-	_entryData->_filter = filter;
+	{
+		auto lock = LockContext();
+		_entryData->_filter = filter;
+	}
+	populateFilterButtonSelection(
+		_settingsButtons,
+		_entryData->_filter.GetFilters(_entryData->_source)[0]);
 	emit HeaderInfoChanged(
 		QString::fromStdString(_entryData->GetShortDesc()));
 }
@@ -266,6 +343,17 @@ void MacroActionFilterEdit::ActionChanged(int value)
 	auto lock = LockContext();
 	_entryData->_action = static_cast<MacroActionFilter::Action>(value);
 	SetWidgetVisibility();
+}
+
+void MacroActionFilterEdit::ButtonChanged(int idx)
+{
+	if (_loading || !_entryData) {
+		return;
+	}
+
+	auto lock = LockContext();
+	_entryData->_button = qvariant_cast<FilterSettingButton>(
+		_settingsButtons->itemData(idx));
 }
 
 void MacroActionFilterEdit::GetSettingsClicked()
@@ -323,11 +411,41 @@ void MacroActionFilterEdit::SetWidgetVisibility()
 		MacroActionFilter::Action::COPY_TRAFO_TO_SETTINGS;
 	_settings->setVisible(showSettings);
 	_getSettings->setVisible(showSettings);
+	_settingsButtons->setVisible(
+		_entryData->_action ==
+		MacroActionFilter::Action::SETTINGS_BUTTON);
 	_trafoSrcLabel->setVisible(showTrafoSrcSelection);
 	_trafoSrcScene->setVisible(showTrafoSrcSelection);
 	_trafoSrcSource->setVisible(showTrafoSrcSelection);
 	adjustSize();
 	updateGeometry();
+}
+
+bool FilterSettingButton::Save(obs_data_t *obj) const
+{
+	auto data = obs_data_create();
+	obs_data_set_string(data, "id", id.c_str());
+	obs_data_set_string(data, "description", description.c_str());
+	obs_data_set_obj(obj, "filterSettingButton", data);
+	obs_data_release(data);
+	return true;
+}
+
+bool FilterSettingButton::Load(obs_data_t *obj)
+{
+	auto data = obs_data_get_obj(obj, "filterSettingButton");
+	id = obs_data_get_string(data, "id");
+	description = obs_data_get_string(data, "description");
+	obs_data_release(data);
+	return true;
+}
+
+std::string FilterSettingButton::ToString() const
+{
+	if (id.empty()) {
+		return "";
+	}
+	return "[" + id + "] " + description;
 }
 
 } // namespace advss
