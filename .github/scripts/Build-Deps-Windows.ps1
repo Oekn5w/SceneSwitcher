@@ -13,6 +13,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+if (-not $Target) {
+    $Target = "x64"
+}
+
 if ( $DebugPreference -eq 'Continue' ) {
     $VerbosePreference = 'Continue'
     $InformationPreference = 'Continue'
@@ -41,28 +45,65 @@ function Build {
         . $Utility.FullName
     }
 
-    $BuildSpec = Get-Content -Path ${BuildSpecFile} -Raw | ConvertFrom-Json
-    $ProductName = $BuildSpec.name
-    $ProductVersion = $BuildSpec.version
-
-    $script:VisualStudioVersion = ''
-    $script:PlatformSDK = '10.0.18363.657'
-
-    Setup-Host
-
-    if ( $CmakeGenerator -eq '' ) {
-        $CmakeGenerator = $script:VisualStudioVersion
+    if ( ! $SkipDeps ) {
+        Install-BuildDependencies -WingetFile "${ScriptHome}/.Wingetfile"
     }
 
-    $DepsPath = "plugin-deps-${script:DepsVersion}-*-${script:Target}"
-    $OBSDepPath = "$(Resolve-Path -Path ${ProjectRoot}/../obs-build-dependencies/${DepsPath})"
+    Log-Information "Run plugin configure step to download OBS deps ..."
+    Push-Location -Stack BuildTemp
+    if ( ! ( ( $SkipAll ) -or ( $SkipBuild ) ) ) {
+        Ensure-Location $ProjectRoot
+
+        $CmakeArgs = @(
+            "-DCMAKE_PREFIX_PATH:PATH=${ADVSSDepPath}"
+        )
+        $CmakeBuildArgs = @()
+        $CmakeInstallArgs = @()
+
+        if ( $VerbosePreference -eq 'Continue' ) {
+            $CmakeBuildArgs += ('--verbose')
+            $CmakeInstallArgs += ('--verbose')
+        }
+
+        if ( $DebugPreference -eq 'Continue' ) {
+            $CmakeArgs += ('--debug-output')
+        }
+
+        $Preset = "windows-$(if ( $Env:CI -ne $null ) { 'ci-' })${Target}"
+
+        $CmakeArgs += @(
+            '--preset', $Preset
+        )
+
+        $CmakeBuildArgs += @(
+            '--build'
+            '--preset', $Preset
+            '--config', $Configuration
+            '--parallel'
+            '--', '/consoleLoggerParameters:Summary', '/noLogo'
+        )
+
+        $CmakeInstallArgs += @(
+            '--install', "build_${Target}"
+            '--prefix', "${ProjectRoot}/release/${Configuration}"
+            '--config', $Configuration
+        )
+
+        Log-Group "Configuring ${ProductName}..."
+        Invoke-External cmake @CmakeArgs
+    }
+
+    $BuildSpec = Get-Content -Path ${BuildSpecFile} -Raw | ConvertFrom-Json
+    $depsVersion = $BuildSpec.dependencies.prebuilt.version
+    $qtDepsVersion = $BuildSpec.dependencies.qt6.version
+    $OBSDepPath = "$(Resolve-Path -Path ${ProjectRoot}/.deps/obs-deps-${depsVersion}-${Target});$(Resolve-Path -Path ${ProjectRoot}/.deps/obs-deps-qt6-${qtDepsVersion}-${Target})"
 
     if ( $OutDirName -eq '' ) {
-        $OutDirName = "advss-build-dependencies"
+        $OutDirName = ".deps/advss-build-dependencies"
     }
-    New-Item -ItemType Directory -Force -Path ${ProjectRoot}/../${OutDirName}
+    New-Item -ItemType Directory -Force -Path ${ProjectRoot}/${OutDirName}
 
-    $ADVSSDepPath = "$(Resolve-Path -Path ${ProjectRoot}/../${OutDirName})"
+    $ADVSSDepPath = "$(Resolve-Path -Path ${ProjectRoot}/${OutDirName})"
 
     $OpenCVPath = "${ProjectRoot}/deps/opencv"
     $OpenCVBuildPath = "${OpenCVPath}/build"
@@ -71,9 +112,6 @@ function Build {
     Ensure-Location $ProjectRoot
 
     $OpenCVCmakeArgs = @(
-        '-G', $CmakeGenerator
-        "-DCMAKE_SYSTEM_VERSION=${script:PlatformSDK}"
-        "-DCMAKE_GENERATOR_PLATFORM=$(if (${script:Target} -eq "x86") { "Win32" } else { "x64" })"
         "-DCMAKE_BUILD_TYPE=Release"
         "-DCMAKE_PREFIX_PATH:PATH=${OBSDepPath}"
         "-DCMAKE_INSTALL_PREFIX:PATH=${ADVSSDepPath}"
@@ -103,9 +141,6 @@ function Build {
     Ensure-Location $ProjectRoot
 
     $LeptonicaCmakeArgs = @(
-        '-G', $CmakeGenerator
-        "-DCMAKE_SYSTEM_VERSION=${script:PlatformSDK}"
-        "-DCMAKE_GENERATOR_PLATFORM=$(if (${script:Target} -eq "x86") { "Win32" } else { "x64" })"
         "-DCMAKE_BUILD_TYPE=${Configuration}"
         "-DCMAKE_PREFIX_PATH:PATH=${OBSDepPath}"
         "-DCMAKE_INSTALL_PREFIX:PATH=${ADVSSDepPath}"
@@ -138,9 +173,6 @@ function Build {
 
     # Explicitly disable PkgConfig and tiff as it will lead build errors
     $TesseractCmakeArgs = @(
-        '-G', $CmakeGenerator
-        "-DCMAKE_SYSTEM_VERSION=${script:PlatformSDK}"
-        "-DCMAKE_GENERATOR_PLATFORM=$(if (${script:Target} -eq "x86") { "Win32" } else { "x64" })"
         "-DCMAKE_BUILD_TYPE=${Configuration}"
         "-DCMAKE_PREFIX_PATH:PATH=${OBSDepPath}"
         "-DCMAKE_INSTALL_PREFIX:PATH=${ADVSSDepPath}"
@@ -167,6 +199,26 @@ function Build {
 
     Log-Information "Install tesseract..."
     Invoke-External cmake --install "${TesseractBuildPath}" --prefix "${ADVSSDepPath}" @TesseractCmakeArgs
+
+    Push-Location -Stack BuildLibusbTemp
+    Ensure-Location $ProjectRoot
+
+    $LibusbPath = "${ProjectRoot}/deps/libusb"
+
+    Log-Information "Building libusb..."
+    $msbuildExe = vswhere -latest -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\MSBuild.exe | select-object -first 1
+
+    if ($msbuildExe) {
+        Invoke-External $msbuildExe "${LibusbPath}/msvc/libusb.sln" /property:Configuration=Release /property:Platform=x64
+
+        $libusbBuildResultDirectory = "${LibusbPath}/build/v143/x64/Release"
+        if (-not (Test-Path -Path $libusbBuildResultDirectory)) {
+            $libusbBuildResultDirectory = "${LibusbPath}/x64/Release/dll"
+        }
+        Copy-Item -Path "${libusbBuildResultDirectory}/*" -Destination ${ADVSSDepPath} -Recurse -Force
+    } else {
+        Log-Information "Failed to locate msbuild.exe - skipping libusb build"
+    }
 }
 
 Build

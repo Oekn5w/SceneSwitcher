@@ -22,3 +22,9 @@
 [submodule "deps/cpp-httplib"]
 	path = deps/cpp-httplib
 	url = https://github.com/yhirose/cpp-httplib.git
+[submodule "deps/json"]
+	path = deps/json
+	url = https://github.com/nlohmann/json.git
+[submodule "deps/libusb"]
+	path = deps/libusb
+	url = https://github.com/libusb/libusb.git

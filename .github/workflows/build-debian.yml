@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
         with:
           submodules: "recursive"
       - name: check_libobs_revision
@@ -37,20 +37,20 @@ jobs:
           tar --exclude=.git -cvzf obs-scene-switcher_0.1+testonly.orig.tar.gz SceneSwitcher
       - name: create_debian_dir
         run: |
-          cp -a CI/linux/debian .
+          cp -a build-aux/CI/linux/debian .
       - name: install_dependencies
         run: |
           # devscripts and libobs-dev are needed but they were already installed
           # from check_libobs_revision and install_frontend_header sections.
           sudo apt update
-          sudo apt install cmake debhelper libcurl4-openssl-dev libxss-dev libxtst-dev qtbase5-dev libopencv-dev libprocps-dev
+          sudo apt install build-essential cmake debhelper libcurl4-openssl-dev libxss-dev libxtst-dev qt6-base-dev libopencv-dev libproc2-dev
       - name: build
         run: |
           debuild --no-lintian --no-sign
           mv ../*.deb .
       - name: Publish
         if: success()
-        uses: actions/upload-artifact@v2.2.1
+        uses: actions/upload-artifact@v4
         with:
           name: "obs-scene-switcher.deb"
           path: ${{ github.workspace }}/*.deb

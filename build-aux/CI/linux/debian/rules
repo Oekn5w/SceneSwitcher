@@ -1,0 +1,16 @@
+#!/usr/bin/make -f
+#export DH_VERBOSE = 1
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+export QT_SELECT = qt6
+
+%:
+	dh $@
+
+
+	dh_auto_configure -- -DBUILD_OUT_OF_TREE=1 \
+                             -DLIBOBS_INCLUDE_DIR=/usr/include/obs \
+                             -DLIBOBS_LIB=/usr/lib/${DEB_TARGET_MULTIARCH}/libobs.so \
+                             -DLIBOBS_FRONTEND_INCLUDE_DIR=/usr/include/obs \
+                             -DLIBOBS_FRONTEND_API_LIB=/usr/lib/${DEB_TARGET_MULTIARCH}/libobs-frontend-api.so

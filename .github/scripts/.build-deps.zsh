@@ -33,7 +33,6 @@ _trap_error() {
 build() {
   if (( ! ${+SCRIPT_HOME} )) typeset -g SCRIPT_HOME=${ZSH_ARGZERO:A:h}
   local host_os=${${(s:-:)ZSH_ARGZERO:t:r}[3]}
-  local target="${host_os}-${CPUTYPE}"
   local project_root=${SCRIPT_HOME:A:h:h}
   local buildspec_file="${project_root}/buildspec.json"
 
@@ -53,8 +52,6 @@ build() {
   local -i _verbosity=1
   local -r _version='1.0.0'
   local -r -a _valid_targets=(
-    macos-x86_64
-    macos-arm64
     macos-universal
     linux-x86_64
   )
@@ -126,7 +123,7 @@ Usage: %B${functrace[1]%:*}%b <option> [<options>]
           log_output ${_usage}
           exit 2
         }
-        BUILD_CONFIG=${2}
+        config=${2}
         shift 2
         ;;
       -o|--out)
@@ -164,11 +161,6 @@ Usage: %B${functrace[1]%:*}%b <option> [<options>]
   check_${host_os}
   setup_ccache
 
-  typeset -g QT_VERSION
-  typeset -g DEPLOYMENT_TARGET
-  typeset -g OBS_DEPS_VERSION
-  setup_${host_os}
-
   local product_name
   local product_version
   local git_tag="$(git describe --tags)"
@@ -183,12 +175,111 @@ Usage: %B${functrace[1]%:*}%b <option> [<options>]
     log_info "Using buildspec.json version identifier '${product_version}'"
   }
 
-  if [[ -z "${OUT_DIR}" ]] {
-    OUT_DIR="advss-build-dependencies"
+  case ${host_os} {
+    macos)
+      sed -i '' \
+        "s/project(\(.*\) VERSION \(.*\))/project(${product_name} VERSION ${product_version})/" \
+        "${project_root}/CMakeLists.txt"
+      ;;
+    linux)
+      sed -i'' \
+        "s/project(\(.*\) VERSION \(.*\))/project(${product_name} VERSION ${product_version})/"\
+        "${project_root}/CMakeLists.txt"
+      ;;
   }
-  mkdir -p "${project_root}/../${OUT_DIR}"
-  local advss_dep_path="$(realpath ${project_root}/../${OUT_DIR})"
-  local _plugin_deps="${project_root:h}/obs-build-dependencies/plugin-deps-${OBS_DEPS_VERSION}-qt${QT_VERSION}-${target##*-}"
+
+  log_info "Run plugin configure step to download OBS deps ..."
+  pushd ${project_root}
+  if (( ! (${skips[(Ie)all]} + ${skips[(Ie)build]}) )) {
+    log_group "Configuring ${product_name}..."
+
+    local -a cmake_args=()
+    local -a cmake_build_args=(--build)
+    local -a cmake_install_args=(--install)
+
+    case ${_loglevel} {
+      0) cmake_args+=(-Wno_deprecated -Wno-dev --log-level=ERROR) ;;
+      1) ;;
+      2) cmake_build_args+=(--verbose) ;;
+      *) cmake_args+=(--debug-output) ;;
+    }
+
+    local -r _preset="${target%%-*}${CI:+-ci}"
+    case ${target} {
+      macos-*)
+        if (( ${+CI} )) typeset -gx NSUnbufferedIO=YES
+
+        cmake_args+=(
+          -DENABLE_TWITCH_PLUGIN=OFF
+          --preset ${_preset}
+        )
+
+        if (( codesign )) {
+          autoload -Uz read_codesign_team && read_codesign_team
+
+          if [[ -z ${CODESIGN_TEAM} ]] {
+            autoload -Uz read_codesign && read_codesign
+          }
+        }
+
+        cmake_args+=(
+          -DCODESIGN_TEAM=${CODESIGN_TEAM:-}
+          -DCODESIGN_IDENTITY=${CODESIGN_IDENT:--}
+        )
+
+        cmake_build_args+=(--preset ${_preset} --parallel --config ${config} -- ONLY_ACTIVE_ARCH=NO -arch arm64 -arch x86_64)
+        cmake_install_args+=(build_macos --config ${config} --prefix "${project_root}/release/${config}")
+
+        local -a xcbeautify_opts=()
+        if (( _loglevel == 0 )) xcbeautify_opts+=(--quiet)
+        ;;
+      linux-*)
+        cmake_args+=(
+          --preset ${_preset}-${target##*-}
+          -G "${generator}"
+          -DQT_VERSION=${QT_VERSION:-6}
+          -DCMAKE_BUILD_TYPE=${config}
+        )
+
+        local cmake_version
+        read -r _ _ cmake_version <<< "$(cmake --version)"
+
+        if [[ ${CPUTYPE} != ${target##*-} ]] {
+          if is-at-least 3.21.0 ${cmake_version}; then
+            cmake_args+=(--toolchain "${project_root}/cmake/linux/toolchains/${target##*-}-linux-gcc.cmake")
+          else
+            cmake_args+=(-D"CMAKE_TOOLCHAIN_FILE=${project_root}/cmake/linux/toolchains/${target##*-}-linux-gcc.cmake")
+          fi
+        }
+
+        cmake_build_args+=(--preset ${_preset}-${target##*-} --config ${config})
+        if [[ ${generator} == 'Unix Makefiles' ]] {
+          cmake_build_args+=(--parallel $(( $(nproc) + 1 )))
+        } else {
+          cmake_build_args+=(--parallel)
+        }
+
+        cmake_install_args+=(build_${target##*-} --prefix ${project_root}/release/${config})
+        ;;
+    }
+
+    log_debug "Attempting to configure with CMake arguments: ${cmake_args}"
+
+    cmake ${cmake_args}
+
+  }
+
+  popd
+  log_group
+
+  if [[ -z "${OUT_DIR}" ]] {
+    OUT_DIR=".deps/advss-build-dependencies"
+  }
+  mkdir -p "${project_root}/${OUT_DIR}"
+  local advss_dep_path="$(realpath ${project_root}/${OUT_DIR})"
+  local deps_version=$(jq -r '.dependencies.prebuilt.version' ${buildspec_file})
+  local qt_deps_version=$(jq -r '.dependencies.qt6.version' ${buildspec_file})
+  local _plugin_deps="${project_root:h}/.deps/obs-deps-${deps_version}-${target##*-};${project_root:h}/.deps/obs-deps-qt6-${qt_deps_version}-${target##*-}"
 
   case ${host_os} {
     macos)
@@ -210,12 +301,12 @@ Usage: %B${functrace[1]%:*}%b <option> [<options>]
 
         pushd ${opencv_dir}
         log_info "Configure OpenCV ..."
-        cmake -S . -B ${opencv_build_dir} -G ${generator} ${opencv_cmake_args}
+        cmake -S . -B ${opencv_build_dir} ${opencv_cmake_args}
 
         log_info "Building OpenCV ..."
         cmake --build ${opencv_build_dir} --config Release
 
-        log_info "Installing OpenCV..."
+        log_info "Installing OpenCV ..."
         cmake --install ${opencv_build_dir} --prefix "${advss_dep_path}" --config Release || true
         popd
 
@@ -239,22 +330,27 @@ Usage: %B${functrace[1]%:*}%b <option> [<options>]
 
         pushd ${leptonica_dir}
         log_info "Configure Leptonica ..."
-        cmake -S . -B ${leptonica_build_dir} -G ${generator} ${leptonica_cmake_args}
+        cmake -S . -B ${leptonica_build_dir} ${leptonica_cmake_args}
 
         log_info "Building Leptonica ..."
         cmake --build ${leptonica_build_dir} --config Release
 
-        log_info "Installing Leptonica..."
+        log_info "Installing Leptonica ..."
         # Workaround for "unknown file attribute: H" errors when running install
         cmake --install ${leptonica_build_dir} --prefix "${advss_dep_path}" --config Release || :
         popd
 
         local tesseract_dir="${project_root}/deps/tesseract"
-        local tesseract_build_dir="${tesseract_dir}/build_${target##*-}"
+        local tesseract_build_dir_x86_64="${tesseract_dir}/build_x86_64"
+
+        pushd ${tesseract_dir}
+        log_info "Configure Tesseract (x86_64) ..."
 
         local -a tesseract_cmake_args=(
           -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_OSX_ARCHITECTURES=${${target##*-}//universal/x86_64;arm64}
+          -DCMAKE_SYSTEM_NAME="Darwin"
+          -DCMAKE_OSX_ARCHITECTURES=x86_64
+          -DCMAKE_SYSTEM_PROCESSOR=x86_64
           -DCMAKE_OSX_DEPLOYMENT_TARGET=${DEPLOYMENT_TARGET:-10.15}
           -DSW_BUILD=OFF
           -DBUILD_TRAINING_TOOLS=OFF
@@ -262,34 +358,46 @@ Usage: %B${functrace[1]%:*}%b <option> [<options>]
           -DCMAKE_INSTALL_PREFIX="${advss_dep_path}"
         )
 
-        if [ "${target}" != "macos-x86_64" ]; then
-          tesseract_cmake_args+=(
-            -DCMAKE_SYSTEM_PROCESSOR=aarch64
-            -DHAVE_AVX=FALSE
-            -DHAVE_AVX2=FALSE
-            -DHAVE_AVX512F=FALSE
-            -DHAVE_FMA=FALSE
-            -DHAVE_SSE4_1=FALSE
-            -DHAVE_NEON=TRUE
-          )
-          sed -i'.original' 's/HAVE_NEON FALSE/HAVE_NEON TRUE/g' "${tesseract_dir}/CMakeLists.txt"
-        fi
+        cmake -S . -B ${tesseract_build_dir_x86_64} ${tesseract_cmake_args}
 
-        pushd ${tesseract_dir}
-        log_info "Configure Tesseract ..."
-        cmake -S . -B ${tesseract_build_dir} -G ${generator} ${tesseract_cmake_args}
+        log_info "Building Tesseract (x86_64) ..."
+        cmake --build ${tesseract_build_dir_x86_64} --config Release
 
-        log_info "Building Tesseract ..."
-        cmake --build ${tesseract_build_dir} --config Release
+        log_info "Configure Tesseract (arm64) ..."
+
+        git checkout .
+
+        local tesseract_build_dir_arm64="${tesseract_dir}/build_arm64"
+        local -a tesseract_cmake_args=(
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_SYSTEM_NAME="Darwin"
+          -DCMAKE_OSX_ARCHITECTURES=arm64
+          -DCMAKE_SYSTEM_PROCESSOR=arm64
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=${DEPLOYMENT_TARGET:-10.15}
+          -DSW_BUILD=OFF
+          -DBUILD_TRAINING_TOOLS=OFF
+          -DCMAKE_PREFIX_PATH="${advss_dep_path};${_plugin_deps}"
+          -DCMAKE_INSTALL_PREFIX="${advss_dep_path}"
+        )
+
+        cmake -S . -B ${tesseract_build_dir_arm64} ${tesseract_cmake_args}
+
+        log_info "Building Tesseract (arm64) ..."
+        cmake --build ${tesseract_build_dir_arm64} --config Release
+
+        log_info "Combine arm and x86 libtesseract binaries ..."
+        mv ${tesseract_build_dir_arm64}/libtesseract.a ${tesseract_build_dir_arm64}/libtesseract_arm.a
+        lipo -create ${tesseract_build_dir_x86_64}/libtesseract.a ${tesseract_build_dir_arm64}/libtesseract_arm.a -output ${tesseract_build_dir_arm64}/libtesseract.a
 
         log_info "Installing Tesseract..."
-        cmake --install ${tesseract_build_dir} --prefix "${advss_dep_path}" --config Release
+        cmake --install ${tesseract_build_dir_arm64} --prefix "${advss_dep_path}" --config Release
+
         popd
 
         pushd ${advss_dep_path}
         log_info "Prepare openssl ..."
         rm -rf openssl
-        git clone git://git.openssl.org/openssl.git --branch openssl-3.1.2 --depth 1
+        git clone https://github.com/openssl/openssl.git --branch openssl-3.1.2 --depth 1
         mv openssl openssl_x86
         cp -r openssl_x86 openssl_arm
 
@@ -311,9 +419,65 @@ Usage: %B${functrace[1]%:*}%b <option> [<options>]
         lipo -create openssl_x86/libcrypto.a openssl_arm/libcrypto.a -output openssl-combined/libcrypto.a
         lipo -create openssl_x86/libssl.a openssl_arm/libssl.a -output openssl-combined/libssl.a
 
-        log_info "Clean up openssl dir..."
+        log_info "Clean up openssl dir ..."
         mv openssl_x86 openssl
         rm -rf openssl_arm
+        popd
+
+        pushd ${project_root}/deps/libusb
+
+        log_info "Configure libusb x86 ..."
+        export SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
+        export CC=$(xcrun --sdk macosx --find clang)
+        export CXX=$(xcrun --sdk macosx --find clang++)
+        export CFLAGS="-arch x86_64 -isysroot $SDKROOT"
+        export CXXFLAGS="-arch x86_64 -isysroot $SDKROOT"
+        export LDFLAGS="-arch x86_64 -isysroot $SDKROOT"
+        export MACOSX_DEPLOYMENT_TARGET=10.15
+
+        log_info "Building libusb x86 ..."
+        mkdir ${project_root}/deps/libusb/out_x86
+        ./autogen.sh
+        ./configure --host=x86_64-apple-darwin --prefix=${advss_dep_path}
+        make && make install
+
+        log_info "Configure libusb arm ..."
+        make clean
+        rm -r ${project_root}/deps/libusb/out_x86
+        mkdir ${project_root}/deps/libusb/out_x86
+        ./configure --host=aarch64-apple-darwin --prefix=${project_root}/deps/libusb/out_x86
+        make && make install
+
+        log_info "Building libusb arm ..."
+        make clean
+        export SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
+        export CC=$(xcrun --sdk macosx --find clang)
+        export CXX=$(xcrun --sdk macosx --find clang++)
+        export CFLAGS="-arch arm64 -isysroot $SDKROOT"
+        export CXXFLAGS="-arch arm64 -isysroot $SDKROOT"
+        export LDFLAGS="-arch arm64 -isysroot $SDKROOT"
+        export MACOSX_DEPLOYMENT_TARGET=10.15
+        mkdir ${project_root}/deps/libusb/out_arm
+        ./configure --host=aarch64-apple-darwin --prefix=${project_root}/deps/libusb/out_arm
+        make && make install
+
+        log_info "Combine arm and x86 libusb binaries ..."
+        lipo -create ${project_root}/deps/libusb/out_x86/lib/libusb-1.0.0.dylib \
+          ${project_root}/deps/libusb/out_arm/lib/libusb-1.0.0.dylib \
+          -output ${advss_dep_path}/lib/temp-libusb-1.0.0.dylib
+        mv ${advss_dep_path}/lib/temp-libusb-1.0.0.dylib ${advss_dep_path}/lib/libusb-1.0.0.dylib
+        install_name_tool -id @rpath/libusb-1.0.0.dylib ${advss_dep_path}/lib/libusb-1.0.0.dylib
+        log_info "Clean up libusb ..."
+
+        unset SDKROOT
+        unset CC
+        unset CXX
+        unset CFLAGS
+        unset CXXFLAGS
+        unset LDFLAGS
+        unset MACOSX_DEPLOYMENT_TARGET
+
+        popd
       ;;
     linux)
       # Nothing to do for now
