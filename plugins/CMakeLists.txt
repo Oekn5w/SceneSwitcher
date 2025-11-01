@@ -28,8 +28,11 @@ install_advss_plugin_dependency(...)
 ... to install the plugin and its dependencies.
 #]]
 
+add_plugin(http)
 add_plugin(midi)
+add_plugin(mqtt)
 add_plugin(openvr)
+add_plugin(scripting)
 add_plugin(stream-deck)
 add_plugin(twitch)
 add_plugin(usb)

@@ -12,27 +12,13 @@ bool MacroActionMacro::_registered = MacroActionFactory::Register(
 	{MacroActionMacro::Create, MacroActionMacroEdit::Create,
 	 "AdvSceneSwitcher.action.macro"});
 
-const static std::map<MacroActionMacro::Action, std::string> actionTypes = {
-	{MacroActionMacro::Action::PAUSE,
-	 "AdvSceneSwitcher.action.macro.type.pause"},
-	{MacroActionMacro::Action::UNPAUSE,
-	 "AdvSceneSwitcher.action.macro.type.unpause"},
-	{MacroActionMacro::Action::RESET_COUNTER,
-	 "AdvSceneSwitcher.action.macro.type.resetCounter"},
-	{MacroActionMacro::Action::RUN,
-	 "AdvSceneSwitcher.action.macro.type.run"},
-	{MacroActionMacro::Action::STOP,
-	 "AdvSceneSwitcher.action.macro.type.stop"},
-	{MacroActionMacro::Action::DISABLE_ACTION,
-	 "AdvSceneSwitcher.action.macro.type.disableAction"},
-	{MacroActionMacro::Action::ENABLE_ACTION,
-	 "AdvSceneSwitcher.action.macro.type.enableAction"},
-	{MacroActionMacro::Action::TOGGLE_ACTION,
-	 "AdvSceneSwitcher.action.macro.type.toggleAction"},
-};
-
 bool MacroActionMacro::PerformAction()
 {
+	if (_action == Action::NESTED_MACRO) {
+		const bool conditionsMatched = _nestedMacro->CheckConditions();
+		return _nestedMacro->PerformActions(conditionsMatched);
+	}
+
 	auto macro = _macro.GetMacro();
 	if (!macro) {
 		return true;
@@ -45,10 +31,13 @@ bool MacroActionMacro::PerformAction()
 	case Action::UNPAUSE:
 		macro->SetPaused(false);
 		break;
+	case Action::TOGGLE_PAUSE:
+		macro->SetPaused(!macro->Paused());
+		break;
 	case Action::RESET_COUNTER:
 		macro->ResetRunCount();
 		break;
-	case Action::RUN:
+	case Action::RUN_ACTIONS:
 		RunActions(macro.get());
 		break;
 	case Action::STOP:
@@ -96,7 +85,7 @@ void MacroActionMacro::LogAction() const
 		ablog(LOG_INFO, "reset counter for \"%s\"",
 		      macro->Name().c_str());
 		break;
-	case Action::RUN:
+	case Action::RUN_ACTIONS:
 		ablog(LOG_INFO, "run nested macro \"%s\"",
 		      macro->Name().c_str());
 		break;
@@ -115,6 +104,9 @@ void MacroActionMacro::LogAction() const
 		ablog(LOG_INFO, "toggled action %d of macro \"%s\"",
 		      _actionIndex.GetValue(), macro->Name().c_str());
 		break;
+	case Action::NESTED_MACRO:
+		ablog(LOG_INFO, "run nested macro");
+		break;
 	default:
 		break;
 	}
@@ -127,6 +119,10 @@ bool MacroActionMacro::Save(obs_data_t *obj) const
 	_actionIndex.Save(obj, "actionIndex");
 	obs_data_set_int(obj, "action", static_cast<int>(_action));
 	_runOptions.Save(obj);
+	OBSDataAutoRelease nestedMacroData = obs_data_create();
+	_nestedMacro->Save(nestedMacroData);
+	obs_data_set_obj(obj, "nestedMacro", nestedMacroData);
+	obs_data_set_int(obj, "customWidgetHeight", _customWidgetHeight);
 	return true;
 }
 
@@ -138,6 +134,15 @@ bool MacroActionMacro::Load(obs_data_t *obj)
 	_action = static_cast<MacroActionMacro::Action>(
 		obs_data_get_int(obj, "action"));
 	_runOptions.Load(obj);
+
+	if (obs_data_has_user_value(obj, "nestedMacro")) {
+		OBSDataAutoRelease nestedMacroData =
+			obs_data_get_obj(obj, "nestedMacro");
+		_nestedMacro->Load(nestedMacroData);
+	}
+
+	_customWidgetHeight = obs_data_get_int(obj, "customWidgetHeight");
+
 	return true;
 }
 
@@ -146,6 +151,7 @@ bool MacroActionMacro::PostLoad()
 	MacroRefAction::PostLoad();
 	MacroAction::PostLoad();
 	_runOptions.macro.PostLoad();
+	_nestedMacro->PostLoad();
 	return true;
 }
 
@@ -161,7 +167,17 @@ std::shared_ptr<MacroAction> MacroActionMacro::Create(Macro *m)
 
 std::shared_ptr<MacroAction> MacroActionMacro::Copy() const
 {
-	return std::make_shared<MacroActionMacro>(*this);
+	auto copy = std::make_shared<MacroActionMacro>(*this);
+
+	// Create a new nested macro
+	OBSDataAutoRelease data = obs_data_create();
+	_nestedMacro->Save(data);
+
+	copy->_nestedMacro = std::make_shared<Macro>();
+	copy->_nestedMacro->Load(data);
+	copy->_nestedMacro->PostLoad();
+
+	return copy;
 }
 
 void MacroActionMacro::ResolveVariablesToFixedValues()
@@ -210,8 +226,33 @@ void MacroActionMacro::RunActions(Macro *actionMacro) const
 
 static void populateActionSelection(QComboBox *list)
 {
-	for (const auto &[_, name] : actionTypes) {
-		list->addItem(obs_module_text(name.c_str()));
+	static const std::vector<std::pair<MacroActionMacro::Action, std::string>>
+		actions = {
+			{MacroActionMacro::Action::PAUSE,
+			 "AdvSceneSwitcher.action.macro.type.pause"},
+			{MacroActionMacro::Action::UNPAUSE,
+			 "AdvSceneSwitcher.action.macro.type.unpause"},
+			{MacroActionMacro::Action::TOGGLE_PAUSE,
+			 "AdvSceneSwitcher.action.macro.type.togglePause"},
+			{MacroActionMacro::Action::RESET_COUNTER,
+			 "AdvSceneSwitcher.action.macro.type.resetCounter"},
+			{MacroActionMacro::Action::NESTED_MACRO,
+			 "AdvSceneSwitcher.action.macro.type.nestedMacro"},
+			{MacroActionMacro::Action::RUN_ACTIONS,
+			 "AdvSceneSwitcher.action.macro.type.run"},
+			{MacroActionMacro::Action::STOP,
+			 "AdvSceneSwitcher.action.macro.type.stop"},
+			{MacroActionMacro::Action::DISABLE_ACTION,
+			 "AdvSceneSwitcher.action.macro.type.disableAction"},
+			{MacroActionMacro::Action::ENABLE_ACTION,
+			 "AdvSceneSwitcher.action.macro.type.enableAction"},
+			{MacroActionMacro::Action::TOGGLE_ACTION,
+			 "AdvSceneSwitcher.action.macro.type.toggleAction"},
+		};
+
+	for (const auto &[value, name] : actions) {
+		list->addItem(obs_module_text(name.c_str()),
+			      static_cast<int>(value));
 	}
 }
 
@@ -235,7 +276,7 @@ static void populateActionTypeSelection(QComboBox *list)
 
 MacroActionMacroEdit::MacroActionMacroEdit(
 	QWidget *parent, std::shared_ptr<MacroActionMacro> entryData)
-	: QWidget(parent),
+	: ResizableWidget(parent),
 	  _macros(new MacroSelection(parent)),
 	  _actionIndex(new MacroSegmentSelection(
 		  this, MacroSegmentSelection::Type::ACTION)),
@@ -254,7 +295,13 @@ MacroActionMacroEdit::MacroActionMacroEdit(
 	  _entryLayout(new QHBoxLayout()),
 	  _conditionLayout(new QHBoxLayout()),
 	  _reevaluateConditionStateLayout(new QHBoxLayout()),
-	  _setInputsLayout(new QHBoxLayout())
+	  _setInputsLayout(new QHBoxLayout()),
+	  _nestedMacro(new MacroEdit(
+		  this,
+		  QStringList()
+			  << "AdvSceneSwitcher.action.macro.type.nestedMacro.conditionHelp"
+			  << "AdvSceneSwitcher.action.macro.type.nestedMacro.actionHelp"
+			  << "AdvSceneSwitcher.action.macro.type.nestedMacro.elseActionHelp"))
 {
 	populateActionSelection(_actions);
 	populateConditionBehaviorSelection(_conditionBehaviors);
@@ -303,17 +350,24 @@ MacroActionMacroEdit::MacroActionMacroEdit(
 	layout->addLayout(_setInputsLayout);
 	layout->addWidget(_inputs);
 	layout->addWidget(_skipWhenPaused);
+	layout->addWidget(_nestedMacro);
 	setLayout(layout);
 	_entryData = entryData;
 	UpdateEntryData();
 	_loading = false;
 }
 
-void HighligthMacroSettingsButton(bool enable);
+void HighlightMacroSettingsButton(bool enable);
 
 MacroActionMacroEdit::~MacroActionMacroEdit()
 {
-	HighligthMacroSettingsButton(false);
+	HighlightMacroSettingsButton(false);
+
+	if (!_entryData) {
+		return;
+	}
+	_entryData->_customWidgetHeight = GetCustomHeight();
+	_nestedMacro->SetMacro({}); // Save splitter states
 }
 
 void MacroActionMacroEdit::UpdateEntryData()
@@ -321,7 +375,8 @@ void MacroActionMacroEdit::UpdateEntryData()
 	if (!_entryData) {
 		return;
 	}
-	_actions->setCurrentIndex(static_cast<int>(_entryData->_action));
+	_actions->setCurrentIndex(
+		_actions->findData(static_cast<int>(_entryData->_action)));
 	_actionIndex->SetValue(_entryData->_actionIndex);
 	_actionIndex->SetMacro(_entryData->_macro.GetMacro());
 	_macros->SetCurrentMacro(_entryData->_macro);
@@ -335,7 +390,18 @@ void MacroActionMacroEdit::UpdateEntryData()
 	_skipWhenPaused->setChecked(_entryData->_runOptions.skipWhenPaused);
 	_setInputs->setChecked(_entryData->_runOptions.setInputs);
 	SetupMacroInput(_entryData->_macro.GetMacro().get());
+
+	const auto &macro = _entryData->_nestedMacro;
+	_nestedMacro->SetMacro(macro);
+
 	SetWidgetVisibility();
+}
+
+QWidget *MacroActionMacroEdit::Create(QWidget *parent,
+				      std::shared_ptr<MacroAction> action)
+{
+	return new MacroActionMacroEdit(
+		parent, std::dynamic_pointer_cast<MacroActionMacro>(action));
 }
 
 void MacroActionMacroEdit::MacroChanged(const QString &text)
@@ -350,10 +416,11 @@ void MacroActionMacroEdit::MacroChanged(const QString &text)
 	SetWidgetVisibility();
 }
 
-void MacroActionMacroEdit::ActionChanged(int value)
+void MacroActionMacroEdit::ActionChanged(int idx)
 {
 	GUARD_LOADING_AND_LOCK();
-	_entryData->_action = static_cast<MacroActionMacro::Action>(value);
+	_entryData->_action = static_cast<MacroActionMacro::Action>(
+		_actions->itemData(idx).toInt());
 	SetWidgetVisibility();
 }
 
@@ -435,7 +502,8 @@ void MacroActionMacroEdit::SetWidgetVisibility()
 
 	PlaceWidgets(
 		obs_module_text(
-			_entryData->_action == MacroActionMacro::Action::RUN
+			_entryData->_action ==
+					MacroActionMacro::Action::RUN_ACTIONS
 				? "AdvSceneSwitcher.action.macro.entry.run"
 				: "AdvSceneSwitcher.action.macro.entry.other"),
 		_entryLayout, placeholders);
@@ -451,7 +519,7 @@ void MacroActionMacroEdit::SetWidgetVisibility()
 			_conditionLayout, placeholders);
 	}
 
-	if (_entryData->_action == MacroActionMacro::Action::RUN ||
+	if (_entryData->_action == MacroActionMacro::Action::RUN_ACTIONS ||
 	    _entryData->_action == MacroActionMacro::Action::STOP) {
 		_macros->HideSelectedMacro();
 	} else {
@@ -467,27 +535,43 @@ void MacroActionMacroEdit::SetWidgetVisibility()
 	_actionIndex->setVisible(isModifyingActionState);
 
 	SetLayoutVisible(_conditionLayout,
-			 _entryData->_action == MacroActionMacro::Action::RUN);
+			 _entryData->_action ==
+				 MacroActionMacro::Action::RUN_ACTIONS);
 	const bool needsAdditionalConditionWidgets =
-		_entryData->_action == MacroActionMacro::Action::RUN &&
+		_entryData->_action == MacroActionMacro::Action::RUN_ACTIONS &&
 		_entryData->_runOptions.logic !=
 			MacroActionMacro::RunOptions::Logic::IGNORE_CONDITIONS;
 	_conditionMacros->setVisible(needsAdditionalConditionWidgets);
 	SetLayoutVisible(_reevaluateConditionStateLayout,
 			 needsAdditionalConditionWidgets);
 	SetLayoutVisible(_setInputsLayout,
-			 _entryData->_action == MacroActionMacro::Action::RUN);
+			 _entryData->_action ==
+				 MacroActionMacro::Action::RUN_ACTIONS);
 	_inputs->setVisible(_entryData->_action ==
-				    MacroActionMacro::Action::RUN &&
+				    MacroActionMacro::Action::RUN_ACTIONS &&
 			    _entryData->_runOptions.setInputs);
-	HighligthMacroSettingsButton(_entryData->_action ==
-					     MacroActionMacro::Action::RUN &&
-				     _entryData->_runOptions.setInputs &&
-				     !_inputs->HasInputsToSet());
+	HighlightMacroSettingsButton(
+		_entryData->_action == MacroActionMacro::Action::RUN_ACTIONS &&
+		_entryData->_runOptions.setInputs &&
+		!_inputs->HasInputsToSet());
 	_actionTypes->setVisible(_entryData->_action ==
-				 MacroActionMacro::Action::RUN);
+				 MacroActionMacro::Action::RUN_ACTIONS);
 	_skipWhenPaused->setVisible(_entryData->_action ==
-				    MacroActionMacro::Action::RUN);
+				    MacroActionMacro::Action::RUN_ACTIONS);
+
+	_nestedMacro->setVisible(_entryData->_action ==
+				 MacroActionMacro::Action::NESTED_MACRO);
+	_macros->setVisible(_entryData->_action !=
+			    MacroActionMacro::Action::NESTED_MACRO);
+	SetResizingEnabled(_entryData->_action ==
+			   MacroActionMacro::Action::NESTED_MACRO);
+
+	if (_nestedMacro->IsEmpty()) {
+		_nestedMacro->ShowAllMacroSections();
+		// TODO: find a better solution than setting a fixed height
+		_entryData->_customWidgetHeight = 600;
+	}
+	SetCustomHeight(_entryData->_customWidgetHeight);
 
 	adjustSize();
 	updateGeometry();

@@ -1,8 +1,8 @@
 #pragma once
 #include "macro-condition-edit.hpp"
 #include "regex-config.hpp"
+#include "variable-string.hpp"
 
-#include <QComboBox>
 #include <QCheckBox>
 
 namespace advss {
@@ -20,7 +20,7 @@ public:
 		return std::make_shared<MacroConditionProcess>(m);
 	}
 
-	std::string _process;
+	StringVariable _process;
 	bool _checkFocus = true;
 	RegexConfig _regex = RegexConfig::PartialMatchRegexConfig();
 
@@ -46,6 +46,9 @@ public:
 			parent,
 			std::dynamic_pointer_cast<MacroConditionProcess>(cond));
 	}
+
+protected:
+	void showEvent(QShowEvent *event) override;
 
 private slots:
 	void ProcessChanged(const QString &text);

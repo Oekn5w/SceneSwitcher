@@ -13,7 +13,7 @@
 
 namespace advss {
 
-static const int tokenGrabberPort = 8080;
+static const int tokenGrabberPort = 42171;
 
 static std::deque<std::shared_ptr<Item>> twitchTokens;
 
@@ -31,6 +31,7 @@ const std::unordered_map<std::string, std::string> TokenOption::_apiIdToLocale{
 	 "AdvSceneSwitcher.twitchToken.channel.raids.manage"},
 	{"moderator:manage:shoutouts",
 	 "AdvSceneSwitcher.twitchToken.moderator.shoutouts.manage"},
+	{"channel:read:ads", "AdvSceneSwitcher.twitchToken.channel.ads.read"},
 	{"channel:read:polls",
 	 "AdvSceneSwitcher.twitchToken.channel.polls.read"},
 	{"channel:manage:polls",
@@ -81,7 +82,7 @@ const std::unordered_map<std::string, std::string> TokenOption::_apiIdToLocale{
 static void saveConnections(obs_data_t *obj);
 static void loadConnections(obs_data_t *obj);
 
-bool setupTwitchTokenSupport()
+static bool setupTwitchTokenSupport()
 {
 	AddSaveStep(saveConnections);
 	AddLoadStep(loadConnections);
@@ -153,11 +154,37 @@ bool TokenOption::operator<(const TokenOption &other) const
 	return apiId < other.apiId;
 }
 
+TwitchToken::TwitchToken(const TwitchToken &other)
+	: Item(other._name),
+	  _token(other._token),
+	  _lastValidityCheckTime(),
+	  _lastValidityCheckValue(),
+	  _lastValidityCheckResult(false),
+	  _userID(other._userID),
+	  _tokenOptions(other._tokenOptions),
+	  _eventSub(),
+	  _validateEventSubTimestamps(other._validateEventSubTimestamps)
+{
+}
+
+TwitchToken &TwitchToken::operator=(const TwitchToken &other)
+{
+	_name = other._name;
+	_token = other._token;
+	_userID = other._userID;
+	_tokenOptions = other._tokenOptions;
+	_validateEventSubTimestamps = other._validateEventSubTimestamps;
+	return *this;
+}
+
 void TwitchToken::Load(obs_data_t *obj)
 {
 	Item::Load(obj);
 	_token = obs_data_get_string(obj, "token");
 	_userID = obs_data_get_string(obj, "userID");
+	obs_data_set_default_bool(obj, "validateEventSubTimestamps", true);
+	_validateEventSubTimestamps =
+		obs_data_get_bool(obj, "validateEventSubTimestamps");
 	_tokenOptions.clear();
 	OBSDataArrayAutoRelease options = obs_data_get_array(obj, "options");
 	size_t count = obs_data_array_count(options);
@@ -174,6 +201,8 @@ void TwitchToken::Save(obs_data_t *obj) const
 	Item::Save(obj);
 	obs_data_set_string(obj, "token", _token.c_str());
 	obs_data_set_string(obj, "userID", _userID.c_str());
+	obs_data_set_bool(obj, "validateEventSubTimestamps",
+			  _validateEventSubTimestamps);
 	OBSDataArrayAutoRelease options = obs_data_array_create();
 	for (auto &option : _tokenOptions) {
 		OBSDataAutoRelease arrayObj = obs_data_create();
@@ -260,45 +289,46 @@ std::shared_ptr<EventSub> TwitchToken::GetEventSub()
 {
 	if (!_eventSub) {
 		_eventSub = std::make_shared<EventSub>();
+		_eventSub->EnableTimestampValidation(
+			_validateEventSubTimestamps);
 	}
 	return _eventSub;
 }
 
 bool TwitchToken::IsValid(bool forceUpdate) const
 {
-	static std::chrono::system_clock::time_point queryTime;
-	static std::string lastQueryToken;
-	static httplib::Result response;
 	static httplib::Client cli("https://id.twitch.tv");
 	httplib::Headers headers{{"Authorization", "OAuth " + _token}};
 
+	std::scoped_lock<std::mutex> lock(_cacheMutex);
+
 	auto currentTime = std::chrono::system_clock::now();
-	auto diff = currentTime - queryTime;
+	auto diff = currentTime - _lastValidityCheckTime;
 	const bool cacheIsTooOld = diff >= std::chrono::hours(1);
 
-	const bool tokenChanged = lastQueryToken != _token;
-	if (tokenChanged) {
-		response =
+	const auto checkToken = [&]() -> bool {
+		const auto response =
 			cli.Get("/oauth2/validate", httplib::Params{}, headers);
-		queryTime = std::chrono::system_clock::now();
-		lastQueryToken = _token;
-		return response && response->status == 200;
+		_lastValidityCheckTime = std::chrono::system_clock::now();
+		_lastValidityCheckValue = _token;
+		_lastValidityCheckResult = response && response->status == 200;
+		if (!_lastValidityCheckResult) {
+			blog(LOG_INFO, "Twitch token %s is not valid!",
+			     _name.c_str());
+		}
+		return _lastValidityCheckResult;
+	};
+
+	const bool tokenChanged = _lastValidityCheckValue != _token;
+	if (tokenChanged) {
+		return checkToken();
 	}
 
-	// No point in checking again as token will not become valid again
-	if (!forceUpdate && response && response->status != 200) {
-		blog(LOG_INFO, "Twitch token %s is not valid!", _name.c_str());
-		return false;
+	if (!forceUpdate && !cacheIsTooOld) {
+		return _lastValidityCheckResult;
 	}
 
-	if (!forceUpdate && !cacheIsTooOld && response) {
-		return response->status == 200;
-	}
-
-	response = cli.Get("/oauth2/validate", httplib::Params{}, headers);
-	queryTime = std::chrono::system_clock::now();
-	lastQueryToken = _token;
-	return response && response->status == 200;
+	return checkToken();
 }
 
 TwitchToken *GetTwitchTokenByName(const QString &name)
@@ -439,13 +469,15 @@ TwitchTokenSettingsDialog::TwitchTokenSettingsDialog(
 			     "AdvSceneSwitcher.twitchToken.select",
 			     "AdvSceneSwitcher.twitchToken.add",
 			     "AdvSceneSwitcher.twitchToken.nameNotAvailable",
-			     parent),
+			     false, parent),
 	  _requestToken(new QPushButton(
 		  obs_module_text("AdvSceneSwitcher.twitchToken.request"))),
 	  _showToken(new QPushButton()),
 	  _currentTokenValue(new QLineEdit()),
 	  _tokenStatus(new QLabel()),
-	  _generalSettingsGrid(new QGridLayout())
+	  _generalSettingsGrid(new QGridLayout()),
+	  _validateTimestamps(new QCheckBox(obs_module_text(
+		  "AdvSceneSwitcher.twitchToken.validateTimestamps")))
 {
 	_showToken->setMaximumWidth(22);
 	_showToken->setFlat(true);
@@ -456,7 +488,6 @@ TwitchTokenSettingsDialog::TwitchTokenSettingsDialog(
 	_currentTokenValue->setText(QString::fromStdString(settings._token));
 
 	_name->setReadOnly(true);
-	_showNameEmptyWarning = false;
 
 	QWidget::connect(_requestToken, SIGNAL(clicked()), this,
 			 SLOT(RequestToken()));
@@ -512,6 +543,7 @@ TwitchTokenSettingsDialog::TwitchTokenSettingsDialog(
 	auto layout = new QVBoxLayout(contentWidget);
 	layout->addLayout(_generalSettingsGrid);
 	layout->addWidget(optionsBox);
+	layout->addWidget(_validateTimestamps);
 	layout->setContentsMargins(0, 0, 0, 0);
 	scrollArea->setWidget(contentWidget);
 
@@ -532,6 +564,11 @@ TwitchTokenSettingsDialog::TwitchTokenSettingsDialog(
 		HighlightWidget(_requestToken, Qt::green, QColor(0, 0, 0, 0),
 				true);
 	}
+
+	_validateTimestamps->setChecked(settings._validateEventSubTimestamps);
+#ifndef VERIFY_TIMESTAMPS
+	_validateTimestamps->hide();
+#endif
 
 	_currentToken = settings;
 
@@ -561,7 +598,9 @@ void TwitchTokenSettingsDialog::CheckIfTokenValid()
 
 void TwitchTokenSettingsDialog::ShowToken()
 {
-	SetButtonIcon(_showToken, ":res/images/visible.svg");
+	SetButtonIcon(_showToken, GetThemeTypeName() == "Light"
+					  ? ":res/images/visible.svg"
+					  : "theme:Dark/visible.svg");
 	_currentTokenValue->setEchoMode(QLineEdit::Normal);
 }
 
@@ -682,22 +721,33 @@ void TwitchTokenSettingsDialog::RequestToken()
 void TwitchTokenSettingsDialog::GotToken(const std::optional<QString> &value)
 {
 	_currentTokenValue->setText(value.value_or(""));
-	if (value.has_value()) {
-		_tokenStatus->setText(obs_module_text(
-			"AdvSceneSwitcher.twitchToken.request.success"));
-		_currentToken.SetToken(value.value().toStdString());
-		auto name = QString::fromStdString(_currentToken._name);
-		_name->setText(name);
-		_name->textEdited(name);
-		QMetaObject::invokeMethod(this, "NameChanged",
-					  Q_ARG(const QString &, name));
-		SetTokenInfoVisible(true);
-	} else {
+	if (!value) {
 		_tokenStatus->setText(obs_module_text(
 			"AdvSceneSwitcher.twitchToken.request.fail"));
 		_name->setText("");
 		SetTokenInfoVisible(false);
+		_requestToken->setEnabled(true);
+		return;
 	}
+
+	_currentToken.SetToken(value.value().toStdString());
+	auto name = QString::fromStdString(_currentToken._name);
+	if (name.isEmpty()) {
+		_tokenStatus->setText(obs_module_text(
+			"AdvSceneSwitcher.twitchToken.request.fail"));
+		_name->setText("");
+		SetTokenInfoVisible(false);
+		_requestToken->setEnabled(true);
+		return;
+	}
+
+	_tokenStatus->setText(obs_module_text(
+		"AdvSceneSwitcher.twitchToken.request.success"));
+	_name->setText(name);
+	_name->textEdited(name);
+	QMetaObject::invokeMethod(this, "NameChanged",
+				  Q_ARG(const QString &, name));
+	SetTokenInfoVisible(true);
 	_requestToken->setEnabled(true);
 }
 
@@ -725,6 +775,12 @@ bool TwitchTokenSettingsDialog::AskForSettings(QWidget *parent,
 
 	settings = dialog._currentToken;
 	settings._tokenOptions = dialog.GetEnabledOptions();
+	settings._validateEventSubTimestamps =
+		dialog._validateTimestamps->isChecked();
+	if (settings._eventSub) {
+		settings._eventSub->EnableTimestampValidation(
+			settings._validateEventSubTimestamps);
+	}
 	return true;
 }
 

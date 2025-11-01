@@ -1,4 +1,4 @@
-#include "macro-action-http.hpp"
+#include "macro-action-http-legacy.hpp"
 #include "curl-helper.hpp"
 #include "layout-helpers.hpp"
 
@@ -9,7 +9,7 @@ const std::string MacroActionHttp::id = "http";
 bool MacroActionHttp::_registered = MacroActionFactory::Register(
 	MacroActionHttp::id,
 	{MacroActionHttp::Create, MacroActionHttpEdit::Create,
-	 "AdvSceneSwitcher.action.http"});
+	 "AdvSceneSwitcher.action.http.legacy", true});
 
 const static std::map<MacroActionHttp::Method, std::string> methods = {
 	{MacroActionHttp::Method::GET, "AdvSceneSwitcher.action.http.type.get"},
@@ -169,7 +169,8 @@ MacroActionHttpEdit::MacroActionHttpEdit(
 	  _headerListLayout(new QVBoxLayout()),
 	  _headerList(new StringListEdit(
 		  this, obs_module_text("AdvSceneSwitcher.action.http.headers"),
-		  obs_module_text("AdvSceneSwitcher.action.http.addHeader"))),
+		  obs_module_text("AdvSceneSwitcher.action.http.addHeader"),
+		  170, [](const std::string &input) { return input.empty(); })),
 	  _timeout(new DurationSelection(this, false))
 {
 	populateMethodSelection(_methods);
@@ -238,54 +239,34 @@ void MacroActionHttpEdit::UpdateEntryData()
 
 void MacroActionHttpEdit::URLChanged()
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_url = _url->text().toStdString();
 	emit(HeaderInfoChanged(_url->text()));
 }
 
 void MacroActionHttpEdit::MethodChanged(int value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_method = static_cast<MacroActionHttp::Method>(value);
 	SetWidgetVisibility();
 }
 
 void MacroActionHttpEdit::TimeoutChanged(const Duration &dur)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_timeout = dur;
 }
 
 void MacroActionHttpEdit::SetHeadersChanged(int value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_setHeaders = value;
 	SetWidgetVisibility();
 }
 
 void MacroActionHttpEdit::HeadersChanged(const StringList &headers)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_headers = headers;
 	adjustSize();
 	updateGeometry();
@@ -302,11 +283,7 @@ void MacroActionHttpEdit::SetWidgetVisibility()
 
 void MacroActionHttpEdit::DataChanged()
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_data = _data->toPlainText().toUtf8().constData();
 
 	adjustSize();

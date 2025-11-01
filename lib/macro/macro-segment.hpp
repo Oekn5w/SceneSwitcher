@@ -19,7 +19,7 @@ namespace advss {
 
 class Macro;
 
-class EXPORT MacroSegment {
+class EXPORT MacroSegment : public Lockable {
 public:
 	MacroSegment(Macro *m, bool supportsVariableValue);
 	virtual ~MacroSegment() = default;
@@ -39,6 +39,8 @@ public:
 	virtual std::string GetId() const = 0;
 	void EnableHighlight();
 	bool GetHighlightAndReset();
+	void SetEnabled(bool);
+	bool Enabled() const;
 	virtual std::string GetVariableValue() const;
 
 protected:
@@ -46,7 +48,7 @@ protected:
 	friend void IncrementVariableRef(MacroSegment *);
 	friend void DecrementVariableRef(MacroSegment *);
 	void SetVariableValue(const std::string &value);
-	bool IsReferencedInVars() { return _variableRefs != 0; }
+	bool IsReferencedInVars() const { return _variableRefs != 0; }
 
 	virtual void SetupTempVars();
 	void AddTempvar(const std::string &id, const std::string &name,
@@ -75,6 +77,7 @@ private:
 	// UI helper
 	bool _highlight = false;
 	bool _collapsed = false;
+	bool _enabled = true;
 
 	// Custom header labels
 	bool _useCustomLabel = false;
@@ -103,27 +106,25 @@ public:
 	void SetCollapsed(bool collapsed);
 	void SetSelected(bool);
 	virtual std::shared_ptr<MacroSegment> Data() const = 0;
+	virtual void SetupWidgets(bool basicSetup = false) = 0;
 
 public slots:
 	void HeaderInfoChanged(const QString &);
 
 protected slots:
-	void Collapsed(bool);
-signals:
-	void MacroAdded(const QString &name);
-	void MacroRemoved(const QString &name);
-	void MacroRenamed(const QString &oldName, const QString &newName);
-	void SceneGroupAdded(const QString &name);
-	void SceneGroupRemoved(const QString &name);
-	void SceneGroupRenamed(const QString &oldName, const QString newName);
+	void Collapsed(bool) const;
 
 protected:
+	void SetDisableEffect(bool);
+	void SetEnableAppearance(bool);
+
 	bool eventFilter(QObject *obj, QEvent *ev) override;
 
 	Section *_section;
 	QLabel *_headerInfo;
 	QWidget *_frame;
 	QVBoxLayout *_contentLayout;
+	bool _allWidgetsAreSetup = false;
 
 private:
 	enum class DropLineState {

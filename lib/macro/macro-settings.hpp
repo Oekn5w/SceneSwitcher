@@ -20,9 +20,10 @@ public:
 	void Save(obs_data_t *obj) const;
 	void Load(obs_data_t *obj);
 
-	bool _highlightExecuted = false;
-	bool _highlightConditions = false;
-	bool _highlightActions = false;
+	bool _highlightExecuted = true;
+	bool _highlightConditions = true;
+	bool _highlightActions = true;
+	bool _newMacroCheckInParallel = false;
 	bool _newMacroRegisterHotkeys = true;
 	bool _newMacroUseShortCircuitEvaluation = false;
 	bool _saveSettingsOnMacroChange = true;
@@ -40,6 +41,7 @@ public:
 				   Macro *macro);
 private slots:
 	void DockEnableChanged(int);
+	void IsStandaloneDockChanged(int);
 	void RunButtonEnableChanged(int);
 	void PauseButtonEnableChanged(int);
 	void StatusLabelEnableChanged(int);
@@ -52,10 +54,12 @@ private:
 	QCheckBox *_highlightExecutedMacros;
 	QCheckBox *_highlightConditions;
 	QCheckBox *_highlightActions;
+	QCheckBox *_newMacroCheckInParallel;
 	QCheckBox *_newMacroRegisterHotkeys;
 	QCheckBox *_newMacroUseShortCircuitEvaluation;
 	QCheckBox *_saveSettingsOnMacroChange;
 	// Current macro specific settings
+	QCheckBox *_currentCheckInParallel;
 	QCheckBox *_currentMacroRegisterHotkeys;
 	QCheckBox *_currentUseShortCircuitEvaluation;
 	QCheckBox *_currentUseCustomConditionCheckInterval;
@@ -66,6 +70,8 @@ private:
 	QCheckBox *_currentStopActionsIfNotDone;
 	MacroInputSelection *_currentInputs;
 	QCheckBox *_currentMacroRegisterDock;
+	QCheckBox *_currentMacroIsStandaloneDock;
+	QLineEdit *_currentMacroDockWindowName;
 	QCheckBox *_currentMacroDockAddRunButton;
 	QCheckBox *_currentMacroDockAddPauseButton;
 	QCheckBox *_currentMacroDockAddStatusLabel;
@@ -78,6 +84,7 @@ private:
 	QGroupBox *_dockOptions;
 	QGridLayout *_dockLayout;
 
+	int _dockWindowNameRow = -1;
 	int _runButtonTextRow = -1;
 	int _pauseButtonTextRow = -1;
 	int _unpauseButtonTextRow = -1;

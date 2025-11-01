@@ -16,25 +16,28 @@ bool MacroActionAudio::_registered = MacroActionFactory::Register(
 	{MacroActionAudio::Create, MacroActionAudioEdit::Create,
 	 "AdvSceneSwitcher.action.audio"});
 
-static const std::map<MacroActionAudio::Action, std::string> actionTypes = {
-	{MacroActionAudio::Action::MUTE,
-	 "AdvSceneSwitcher.action.audio.type.mute"},
-	{MacroActionAudio::Action::UNMUTE,
-	 "AdvSceneSwitcher.action.audio.type.unmute"},
-	{MacroActionAudio::Action::SOURCE_VOLUME,
-	 "AdvSceneSwitcher.action.audio.type.sourceVolume"},
-	{MacroActionAudio::Action::MASTER_VOLUME,
-	 "AdvSceneSwitcher.action.audio.type.masterVolume"},
-	{MacroActionAudio::Action::SYNC_OFFSET,
-	 "AdvSceneSwitcher.action.audio.type.syncOffset"},
-	{MacroActionAudio::Action::MONITOR,
-	 "AdvSceneSwitcher.action.audio.type.monitor"},
-	{MacroActionAudio::Action::BALANCE,
-	 "AdvSceneSwitcher.action.audio.type.balance"},
-	{MacroActionAudio::Action::ENABLE_ON_TRACK,
-	 "AdvSceneSwitcher.action.audio.type.enableOnTrack"},
-	{MacroActionAudio::Action::DISABLE_ON_TRACK,
-	 "AdvSceneSwitcher.action.audio.type.disableOnTrack"},
+static const std::vector<std::pair<MacroActionAudio::Action, std::string>>
+	actionTypes = {
+		{MacroActionAudio::Action::MUTE,
+		 "AdvSceneSwitcher.action.audio.type.mute"},
+		{MacroActionAudio::Action::UNMUTE,
+		 "AdvSceneSwitcher.action.audio.type.unmute"},
+		{MacroActionAudio::Action::TOGGLE_MUTE,
+		 "AdvSceneSwitcher.action.audio.type.toggleMute"},
+		{MacroActionAudio::Action::SOURCE_VOLUME,
+		 "AdvSceneSwitcher.action.audio.type.sourceVolume"},
+		{MacroActionAudio::Action::MASTER_VOLUME,
+		 "AdvSceneSwitcher.action.audio.type.masterVolume"},
+		{MacroActionAudio::Action::SYNC_OFFSET,
+		 "AdvSceneSwitcher.action.audio.type.syncOffset"},
+		{MacroActionAudio::Action::MONITOR,
+		 "AdvSceneSwitcher.action.audio.type.monitor"},
+		{MacroActionAudio::Action::BALANCE,
+		 "AdvSceneSwitcher.action.audio.type.balance"},
+		{MacroActionAudio::Action::ENABLE_ON_TRACK,
+		 "AdvSceneSwitcher.action.audio.type.enableOnTrack"},
+		{MacroActionAudio::Action::DISABLE_ON_TRACK,
+		 "AdvSceneSwitcher.action.audio.type.disableOnTrack"},
 };
 
 static const std::map<MacroActionAudio::FadeType, std::string> fadeTypes = {
@@ -255,6 +258,9 @@ bool MacroActionAudio::PerformAction()
 	case Action::UNMUTE:
 		obs_source_set_muted(s, false);
 		break;
+	case Action::TOGGLE_MUTE:
+		obs_source_set_muted(s, !obs_source_muted(s));
+		break;
 	case Action::SOURCE_VOLUME:
 	case Action::MASTER_VOLUME:
 		if (_fade) {
@@ -287,7 +293,10 @@ bool MacroActionAudio::PerformAction()
 
 void MacroActionAudio::LogAction() const
 {
-	auto it = actionTypes.find(_action);
+	auto it = std::find_if(
+		actionTypes.begin(), actionTypes.end(),
+		[this](const std::pair<MacroActionAudio::Action, std::string>
+			       &item) { return item.first == _action; });
 	if (it != actionTypes.end()) {
 		auto &[_, action] = *it;
 		ablog(LOG_INFO,
@@ -421,10 +430,17 @@ static inline void populateFadeTypeSelection(QComboBox *list)
 	}
 }
 
+static QStringList getAudioSourcesList()
+{
+	auto sources = GetAudioSourceNames();
+	sources.sort();
+	return sources;
+}
+
 MacroActionAudioEdit::MacroActionAudioEdit(
 	QWidget *parent, std::shared_ptr<MacroActionAudio> entryData)
 	: QWidget(parent),
-	  _sources(new SourceSelectionWidget(this, QStringList(), true)),
+	  _sources(new SourceSelectionWidget(this, getAudioSourcesList, true)),
 	  _actions(new QComboBox),
 	  _fadeTypes(new QComboBox),
 	  _syncOffset(new VariableSpinBox),
@@ -468,9 +484,6 @@ MacroActionAudioEdit::MacroActionAudioEdit(
 	_rate->setSuffix("%");
 
 	populateActionSelection(_actions);
-	auto sources = GetAudioSourceNames();
-	sources.sort();
-	_sources->SetSourceNameList(sources);
 	populateFadeTypeSelection(_fadeTypes);
 	PopulateMonitorTypeSelection(_monitorTypes);
 
@@ -518,7 +531,7 @@ MacroActionAudioEdit::MacroActionAudioEdit(
 	QWidget::connect(_fadeTypes, SIGNAL(currentIndexChanged(int)), this,
 			 SLOT(FadeTypeChanged(int)));
 
-	std::unordered_map<std::string, QWidget *> widgetPlaceholders = {
+	const std::unordered_map<std::string, QWidget *> widgetPlaceholders = {
 		{"{{audioSources}}", _sources},
 		{"{{actions}}", _actions},
 		{"{{syncOffset}}", _syncOffset},
@@ -628,8 +641,7 @@ void MacroActionAudioEdit::SetWidgetVisibility()
 	if (_entryData->_action != MacroActionAudio::Action::MASTER_VOLUME &&
 	    obs_get_version() >= MAKE_SEMANTIC_VERSION(29, 0, 0)) {
 		_actions->removeItem(_actions->findText(obs_module_text(
-			actionTypes.at(MacroActionAudio::Action::MASTER_VOLUME)
-				.c_str())));
+			"AdvSceneSwitcher.action.audio.type.masterVolume")));
 	}
 
 	updateGeometry();
@@ -662,11 +674,7 @@ void MacroActionAudioEdit::UpdateEntryData()
 
 void MacroActionAudioEdit::SourceChanged(const SourceSelection &source)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_audioSource = source;
 	emit HeaderInfoChanged(
 		QString::fromStdString(_entryData->GetShortDesc()));
@@ -674,11 +682,7 @@ void MacroActionAudioEdit::SourceChanged(const SourceSelection &source)
 
 void MacroActionAudioEdit::ActionChanged(int idx)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_action = static_cast<MacroActionAudio::Action>(
 		_actions->itemData(idx).toInt());
 	SetWidgetVisibility();
@@ -686,133 +690,81 @@ void MacroActionAudioEdit::ActionChanged(int idx)
 
 void MacroActionAudioEdit::SyncOffsetChanged(const NumberVariable<int> &value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_syncOffset = value;
 }
 
 void MacroActionAudioEdit::MonitorTypeChanged(int value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_monitorType = static_cast<obs_monitoring_type>(value);
 }
 
 void MacroActionAudioEdit::BalanceChanged(const NumberVariable<double> &value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_balance = value;
 }
 
 void MacroActionAudioEdit::TrackChanged(const NumberVariable<int> &value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_track = value;
 }
 
 void MacroActionAudioEdit::VolumeDBChanged(const NumberVariable<double> &value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_volumeDB = value;
 }
 
 void MacroActionAudioEdit::PercentDBClicked()
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_useDb = !_entryData->_useDb;
 	SetWidgetVisibility();
 }
 
 void MacroActionAudioEdit::VolumeChanged(const NumberVariable<int> &value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_volume = value;
 }
 
 void MacroActionAudioEdit::FadeChanged(int value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_fade = value;
 	SetWidgetVisibility();
 }
 
 void MacroActionAudioEdit::DurationChanged(const Duration &dur)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_duration = dur;
 }
 
 void MacroActionAudioEdit::RateChanged(const NumberVariable<double> &value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_rate = value;
 }
 
 void MacroActionAudioEdit::WaitChanged(int value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_wait = value;
 }
 
 void MacroActionAudioEdit::AbortActiveFadeChanged(int value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_abortActiveFade = value;
 }
 
 void MacroActionAudioEdit::FadeTypeChanged(int value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_fadeType = static_cast<MacroActionAudio::FadeType>(value);
 	SetWidgetVisibility();
 }

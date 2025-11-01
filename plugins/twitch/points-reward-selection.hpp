@@ -20,7 +20,7 @@ class TwitchPointsRewardSelection : public FilterComboBox {
 	Q_OBJECT
 
 public:
-	TwitchPointsRewardSelection(QWidget *parent, bool allowAny = true);
+	TwitchPointsRewardSelection(QWidget *parent, bool allowAny);
 
 	void SetPointsReward(const TwitchPointsReward &pointsReward);
 	void SetChannel(const TwitchChannel &channel);
@@ -35,10 +35,6 @@ protected:
 
 private:
 	void AddPredefinedItems();
-	std::optional<std::vector<TwitchPointsReward>>
-	GetPointsRewards(const std::shared_ptr<TwitchToken> &token,
-			 const TwitchChannel &channel);
-	std::vector<TwitchPointsReward> ParseResponse(obs_data_t *response);
 
 	bool _allowAny;
 	const std::vector<TokenOption> _supportedTokenOptions = {
@@ -57,7 +53,7 @@ class TwitchPointsRewardWidget : public QWidget {
 	Q_OBJECT
 
 public:
-	TwitchPointsRewardWidget(QWidget *parent);
+	TwitchPointsRewardWidget(QWidget *parent, bool allowAny);
 
 	void SetPointsReward(const TwitchPointsReward &pointsReward);
 	void SetChannel(const TwitchChannel &channel);
@@ -70,5 +66,9 @@ protected:
 	TwitchPointsRewardSelection *_selection;
 	QPushButton *_refreshButton;
 };
+
+std::optional<std::vector<TwitchPointsReward>>
+GetPointsRewardsForChannel(const std::shared_ptr<TwitchToken> &token,
+			   const TwitchChannel &channel);
 
 } // namespace advss

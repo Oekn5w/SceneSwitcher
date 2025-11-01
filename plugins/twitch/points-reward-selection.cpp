@@ -1,6 +1,7 @@
 #include "points-reward-selection.hpp"
 #include "twitch-helpers.hpp"
 
+#include <log-helper.hpp>
 #include <obs-module-helper.hpp>
 #include <ui-helpers.hpp>
 
@@ -88,7 +89,7 @@ void TwitchPointsRewardSelection::PopulateSelection()
 	const QSignalBlocker b(this);
 	clear();
 
-	auto pointsRewards = GetPointsRewards(token, *_channel);
+	auto pointsRewards = GetPointsRewardsForChannel(token, *_channel);
 	if (!pointsRewards) {
 		DisplayErrorMessage(obs_module_text(
 			"AdvSceneSwitcher.twitch.selection.points.reward.tooltip.error"));
@@ -127,47 +128,6 @@ void TwitchPointsRewardSelection::HideErrorMessage()
 	setToolTip("");
 }
 
-std::optional<std::vector<TwitchPointsReward>>
-TwitchPointsRewardSelection::GetPointsRewards(
-	const std::shared_ptr<TwitchToken> &token, const TwitchChannel &channel)
-{
-	httplib::Params params = {
-		{"broadcaster_id", channel.GetUserID(*token)}};
-
-	auto response = SendGetRequest(*token, "https://api.twitch.tv",
-				       "/helix/channel_points/custom_rewards",
-				       params);
-
-	if (response.status != 200) {
-		blog(LOG_WARNING,
-		     "Failed to fetch points rewards for user %s and channel %s! (%d)",
-		     token->GetName().c_str(), channel.GetName().c_str(),
-		     response.status);
-
-		return {};
-	}
-
-	return ParseResponse(response.data);
-}
-
-std::vector<TwitchPointsReward>
-TwitchPointsRewardSelection::ParseResponse(obs_data_t *response)
-{
-	std::vector<TwitchPointsReward> pointRewards;
-	OBSDataArrayAutoRelease jsonArray =
-		obs_data_get_array(response, "data");
-	size_t count = obs_data_array_count(jsonArray);
-
-	for (size_t i = 0; i < count; ++i) {
-		OBSDataAutoRelease jsonObj = obs_data_array_item(jsonArray, i);
-		std::string id = obs_data_get_string(jsonObj, "id");
-		std::string title = obs_data_get_string(jsonObj, "title");
-		pointRewards.push_back({id, title});
-	}
-
-	return pointRewards;
-}
-
 void TwitchPointsRewardSelection::SelectionChanged(int index)
 {
 	TwitchPointsReward pointsReward{
@@ -176,13 +136,16 @@ void TwitchPointsRewardSelection::SelectionChanged(int index)
 	emit PointsRewardChanged(pointsReward);
 }
 
-TwitchPointsRewardWidget::TwitchPointsRewardWidget(QWidget *parent)
+TwitchPointsRewardWidget::TwitchPointsRewardWidget(QWidget *parent,
+						   bool allowAny)
 	: QWidget(parent),
-	  _selection(new TwitchPointsRewardSelection(this)),
+	  _selection(new TwitchPointsRewardSelection(this, allowAny)),
 	  _refreshButton(new QPushButton(this))
 {
 	_refreshButton->setMaximumWidth(22);
-	SetButtonIcon(_refreshButton, ":res/images/refresh.svg");
+	SetButtonIcon(_refreshButton, GetThemeTypeName() == "Light"
+					      ? ":res/images/refresh.svg"
+					      : "theme:Dark/refresh.svg");
 	_refreshButton->setToolTip(obs_module_text(
 		"AdvSceneSwitcher.twitch.selection.points.reward.refresh"));
 
@@ -214,6 +177,46 @@ void TwitchPointsRewardWidget::SetChannel(const TwitchChannel &channel)
 void TwitchPointsRewardWidget::SetToken(const std::weak_ptr<TwitchToken> &token)
 {
 	_selection->SetToken(token);
+}
+
+static std::vector<TwitchPointsReward> parseApiResponse(obs_data_t *response)
+{
+	std::vector<TwitchPointsReward> pointRewards;
+	OBSDataArrayAutoRelease jsonArray =
+		obs_data_get_array(response, "data");
+	size_t count = obs_data_array_count(jsonArray);
+
+	for (size_t i = 0; i < count; ++i) {
+		OBSDataAutoRelease jsonObj = obs_data_array_item(jsonArray, i);
+		std::string id = obs_data_get_string(jsonObj, "id");
+		std::string title = obs_data_get_string(jsonObj, "title");
+		pointRewards.push_back({id, title});
+	}
+
+	return pointRewards;
+}
+
+std::optional<std::vector<TwitchPointsReward>>
+GetPointsRewardsForChannel(const std::shared_ptr<TwitchToken> &token,
+			   const TwitchChannel &channel)
+{
+	httplib::Params params = {
+		{"broadcaster_id", channel.GetUserID(*token)}};
+
+	auto response = SendGetRequest(*token, "https://api.twitch.tv",
+				       "/helix/channel_points/custom_rewards",
+				       params, true);
+
+	if (response.status != 200) {
+		blog(LOG_WARNING,
+		     "Failed to fetch points rewards for user %s and channel %s! (%d)",
+		     token->GetName().c_str(), channel.GetName().c_str(),
+		     response.status);
+
+		return {};
+	}
+
+	return parseApiResponse(response.data);
 }
 
 } // namespace advss

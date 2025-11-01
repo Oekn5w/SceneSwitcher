@@ -33,6 +33,7 @@ public:
 		INDIVIDUAL_SETTING_CHANGED,
 		HEIGHT,
 		WIDTH,
+		INDIVIDUAL_SETTING_LIST_ENTRY_MATCH,
 	};
 	void SetCondition(Condition);
 	Condition GetCondition() const { return _condition; }
@@ -44,13 +45,14 @@ public:
 	SourceSetting _setting;
 	RegexConfig _regex;
 	IntVariable _size;
-	SizeComparision _comparision = SizeComparision::EQUAL;
+	SizeComparision _comparison = SizeComparision::EQUAL;
+	bool _includeDefaults = false;
 
 private:
 	void SetupTempVars();
 
 	Condition _condition = Condition::ACTIVE;
-	std::string _currentSettings;
+	std::optional<std::string> _currentSettings;
 	std::string _currentSettingsValue;
 
 	static bool _registered;
@@ -83,6 +85,7 @@ private slots:
 	void RefreshVariableSourceSelectionValue();
 	void SizeChanged(const NumberVariable<int> &value);
 	void CompareMethodChanged(int);
+	void IncludeDefaultsChanged(int);
 signals:
 	void HeaderInfoChanged(const QString &);
 
@@ -96,6 +99,7 @@ protected:
 	QPushButton *_refreshSettingSelection;
 	VariableSpinBox *_size;
 	QComboBox *_sizeCompareMethods;
+	QCheckBox *_includeDefaults;
 
 	std::shared_ptr<MacroConditionSource> _entryData;
 

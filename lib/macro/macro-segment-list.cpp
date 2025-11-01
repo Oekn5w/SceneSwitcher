@@ -13,29 +13,53 @@
 
 namespace advss {
 
+bool MacroSegmentList::_useCache = true;
+
 MacroSegmentList::MacroSegmentList(QWidget *parent)
 	: QScrollArea(parent),
+	  _stackedWidget(new QStackedWidget(this)),
 	  _layout(new QVBoxLayout),
 	  _contentLayout(new QVBoxLayout),
-	  _helpMsg(new QLabel)
+	  _helpMsg(new QLabel(this))
 {
 	_helpMsg->setWordWrap(true);
 	_helpMsg->setAlignment(Qt::AlignCenter);
+	auto helpWidget = new QWidget(this);
+	auto helpLayout = new QVBoxLayout(helpWidget);
+	helpLayout->addWidget(_helpMsg);
+	helpLayout->setAlignment(Qt::AlignCenter);
+
+	auto contentWidget = new QWidget(this);
+	contentWidget->setLayout(_contentLayout);
 	_contentLayout->setSpacing(0);
-	auto helperLayout = new QGridLayout();
-	helperLayout->addWidget(_helpMsg, 0, 0,
-				Qt::AlignHCenter | Qt::AlignVCenter);
-	helperLayout->addLayout(_contentLayout, 0, 0);
-	helperLayout->setSizeConstraint(QLayout::SetMinAndMaxSize);
-	_layout->addLayout(helperLayout, 10);
-	_layout->addItem(new QSpacerItem(0, 0, QSizePolicy::Expanding,
-					 QSizePolicy::Expanding));
-	auto wrapper = new QWidget;
-	wrapper->setLayout(_layout);
-	setWidget(wrapper);
+
+	auto contentWrapper = new QWidget(this);
+	auto wrapperLayout = new QVBoxLayout(contentWrapper);
+	wrapperLayout->setContentsMargins(0, 0, 0, 0);
+	wrapperLayout->addWidget(contentWidget);
+	// Move macro segments to the top of the list
+	wrapperLayout->addItem(new QSpacerItem(0, 0, QSizePolicy::Expanding,
+					       QSizePolicy::Expanding));
+
+	_stackedWidget->addWidget(helpWidget);
+	_stackedWidget->addWidget(contentWrapper);
+
+	setWidget(_stackedWidget);
 	setWidgetResizable(true);
 	setAcceptDrops(true);
+
+	SetHelpMsgVisible(true);
+
+	connect(verticalScrollBar(), &QScrollBar::valueChanged, this,
+		[this]() { SetupVisibleMacroSegmentWidgets(); });
 }
+
+static void clearWidgetVector(const std::vector<QWidget *> &widgets)
+{
+	for (auto widget : widgets) {
+		widget->deleteLater();
+	}
+};
 
 MacroSegmentList::~MacroSegmentList()
 {
@@ -43,6 +67,8 @@ MacroSegmentList::~MacroSegmentList()
 		_autoScroll = false;
 		_autoScrollThread.join();
 	}
+
+	ClearWidgetCache();
 }
 
 static bool posIsInScrollbar(const QScrollBar *scrollbar, const QPoint &pos)
@@ -53,7 +79,7 @@ static bool posIsInScrollbar(const QScrollBar *scrollbar, const QPoint &pos)
 	if (!scrollbar->isVisible()) {
 		return false;
 	}
-	const auto geo = scrollbar->geometry();
+	const auto &geo = scrollbar->geometry();
 	const auto globalGeo = QRect(scrollbar->mapToGlobal(geo.topLeft()),
 				     scrollbar->mapToGlobal(geo.bottomRight()));
 	return globalGeo.contains(pos);
@@ -93,31 +119,102 @@ void MacroSegmentList::SetHelpMsg(const QString &msg) const
 	_helpMsg->setText(msg);
 }
 
-void MacroSegmentList::SetHelpMsgVisible(bool visible) const
+void MacroSegmentList::SetHelpMsgVisible(bool visible)
 {
-	_helpMsg->setVisible(visible);
+	_stackedWidget->setCurrentIndex(visible ? 0 : 1);
+	adjustSize();
+	updateGeometry();
 }
 
-void MacroSegmentList::Insert(int idx, MacroSegmentEdit *widget)
+void MacroSegmentList::Insert(int idx, QWidget *widget)
 {
 	widget->installEventFilter(this);
 	_contentLayout->insertWidget(idx, widget);
+	SetupVisibleMacroSegmentWidgets();
+	SetHelpMsgVisible(false);
+	adjustSize();
+	updateGeometry();
 }
 
 void MacroSegmentList::Add(QWidget *widget)
 {
-	widget->installEventFilter(this);
-	_contentLayout->addWidget(widget);
+	Insert(_contentLayout->count(), widget);
 }
 
-void MacroSegmentList::Remove(int idx) const
+void MacroSegmentList::Remove(int idx)
 {
 	DeleteLayoutItemWidget(_contentLayout->takeAt(idx));
+	adjustSize();
+	updateGeometry();
+	if (IsEmpty()) {
+		SetHelpMsgVisible(true);
+	}
 }
 
-void MacroSegmentList::Clear(int idx) const
+void MacroSegmentList::Clear(int idx)
 {
 	ClearLayout(_contentLayout, idx);
+	adjustSize();
+	updateGeometry();
+
+	SetHelpMsgVisible(true);
+}
+
+void MacroSegmentList::SetCachingEnabled(bool enable)
+{
+	_useCache = enable;
+}
+
+void MacroSegmentList::CacheCurrentWidgetsFor(const Macro *macro)
+{
+	if (!_useCache) {
+		return;
+	}
+
+	std::vector<QWidget *> result;
+	int idx = 0;
+	QLayoutItem *item;
+	while ((item = _contentLayout->takeAt(idx))) {
+		if (!item || !item->widget()) {
+			continue;
+		}
+		auto widget = item->widget();
+		widget->hide();
+		result.emplace_back(widget);
+	}
+
+	_widgetCache[macro] = result;
+}
+
+bool MacroSegmentList::PopulateWidgetsFromCache(const Macro *macro)
+{
+	if (!_useCache) {
+		return false;
+	}
+
+	auto it = _widgetCache.find(macro);
+	if (it == _widgetCache.end()) {
+		return false;
+	}
+
+	for (auto widget : it->second) {
+		_contentLayout->addWidget(widget);
+		widget->show();
+	}
+
+	adjustSize();
+	updateGeometry();
+	return true;
+}
+
+void MacroSegmentList::ClearWidgetsFromCacheFor(const Macro *macro)
+{
+	auto it = _widgetCache.find(macro);
+	if (it == _widgetCache.end()) {
+		return;
+	}
+	clearWidgetVector(it->second);
+	_widgetCache.erase(it);
 }
 
 void MacroSegmentList::Highlight(int idx, QColor color)
@@ -178,11 +275,7 @@ void MacroSegmentList::mousePressEvent(QMouseEvent *event)
 {
 	if (event->button() == Qt::LeftButton ||
 	    event->button() == Qt::RightButton) {
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-		_dragPosition = GetDragIndex(event->globalPos());
-#else
 		_dragPosition = GetDragIndex(event->globalPosition().toPoint());
-#endif
 		emit SelectionChanged(_dragPosition);
 	} else {
 		_dragPosition = -1;
@@ -269,6 +362,13 @@ void MacroSegmentList::HideLastDropLine()
 	_dropLineIdx = -1;
 }
 
+void MacroSegmentList::ClearWidgetCache()
+{
+	for (const auto &[_, widgets] : _widgetCache) {
+		clearWidgetVector(widgets);
+	}
+}
+
 static bool isInUpperHalfOf(const QPoint &pos, const QRect &rect)
 {
 	return QRect(rect.topLeft(),
@@ -300,11 +400,7 @@ void MacroSegmentList::dragMoveEvent(QDragMoveEvent *event)
 		return;
 	}
 
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-	_dragCursorPos = (mapToGlobal(event->pos()));
-#else
 	_dragCursorPos = (mapToGlobal(event->position().toPoint()));
-#endif
 	CheckDropLine(_dragCursorPos);
 }
 
@@ -328,6 +424,55 @@ QRect MacroSegmentList::GetContentItemRectWithPadding(int idx) const
 		QSize(itemRect.size().width(),
 		      itemRect.size().height() + _contentLayout->spacing()));
 	return rect;
+}
+
+void MacroSegmentList::SetVisibilityCheckEnable(bool enable)
+{
+	_checkVisibility = enable;
+
+	if (_checkVisibility) {
+		QTimer::singleShot(0, this, [this]() {
+			SetupVisibleMacroSegmentWidgets();
+		});
+	}
+}
+
+bool MacroSegmentList::IsEmpty() const
+{
+	return _contentLayout->count() == 0;
+}
+
+QSize MacroSegmentList::minimumSizeHint() const
+{
+	return _stackedWidget->currentWidget()->minimumSizeHint();
+}
+
+QSize MacroSegmentList::sizeHint() const
+{
+	const auto contentSize = _stackedWidget->currentWidget()->sizeHint();
+	const auto hint =
+		QSize(width(), contentSize.height() + 2 * frameWidth());
+	return hint;
+}
+
+void MacroSegmentList::SetupVisibleMacroSegmentWidgets()
+{
+	if (!_checkVisibility) {
+		return;
+	}
+
+	const auto viewportRect = viewport()->rect();
+
+	for (auto segment : widget()->findChildren<MacroSegmentEdit *>()) {
+		const auto pos = segment->mapTo(viewport(), QPoint(0, 0));
+		const QRect rect(pos, segment->size());
+		if (!viewportRect.intersects(rect)) {
+			continue;
+		}
+
+		segment->SetupWidgets();
+	}
+	updateGeometry();
 }
 
 int MacroSegmentList::GetSegmentIndexFromPos(const QPoint &pos) const
@@ -450,16 +595,6 @@ void MacroSegmentList::dropEvent(QDropEvent *event)
 {
 	HideLastDropLine();
 	auto widget = qobject_cast<QWidget *>(event->source());
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-	if (widget && !widget->geometry().contains(event->pos()) &&
-	    widgetIsInLayout(widget, _contentLayout)) {
-		int dropPosition = GetDropIndex(mapToGlobal(event->pos()));
-		if (dropPosition == -1) {
-			return;
-		}
-		emit Reorder(dropPosition, _dragPosition);
-	}
-#else
 	if (widget &&
 	    !widget->geometry().contains(event->position().toPoint()) &&
 	    widgetIsInLayout(widget, _contentLayout)) {
@@ -470,8 +605,13 @@ void MacroSegmentList::dropEvent(QDropEvent *event)
 		}
 		emit Reorder(dropPosition, _dragPosition);
 	}
-#endif
 	_dragPosition = -1;
+}
+
+void MacroSegmentList::resizeEvent(QResizeEvent *event)
+{
+	QScrollArea::resizeEvent(event);
+	SetupVisibleMacroSegmentWidgets();
 }
 
 } // namespace advss

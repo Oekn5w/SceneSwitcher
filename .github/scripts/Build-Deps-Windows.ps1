@@ -209,7 +209,9 @@ function Build {
     $msbuildExe = vswhere -latest -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\MSBuild.exe | select-object -first 1
 
     if ($msbuildExe) {
+        $env:CL="/wd5287"
         Invoke-External $msbuildExe "${LibusbPath}/msvc/libusb.sln" /property:Configuration=Release /property:Platform=x64
+        Remove-Item Env:CL
 
         $libusbBuildResultDirectory = "${LibusbPath}/build/v143/x64/Release"
         if (-not (Test-Path -Path $libusbBuildResultDirectory)) {
@@ -219,6 +221,53 @@ function Build {
     } else {
         Log-Information "Failed to locate msbuild.exe - skipping libusb build"
     }
+
+    Push-Location -Stack BuildMqttTemp
+    Ensure-Location $ProjectRoot
+
+    $MqttPath = "${ProjectRoot}/deps/paho.mqtt.cpp"
+    $MqttBuildPath = "${MqttPath}/build"
+
+    # Explicitly disable PkgConfig and tiff as it will lead build errors
+    $MqttCmakeArgs = @(
+        "-DCMAKE_BUILD_TYPE=${Configuration}"
+        "-DCMAKE_PREFIX_PATH:PATH=${OBSDepPath}"
+        "-DCMAKE_INSTALL_PREFIX:PATH=${ADVSSDepPath}"
+        "-DPAHO_WITH_MQTT_C=ON"
+        "-DPAHO_WITH_SSL=ON"
+    )
+
+    # Try to find OpenSSL installed via winget
+    $pf64 = Join-Path $Env:ProgramFiles "OpenSSL-Win64"
+    $pf = Join-Path $Env:ProgramFiles "OpenSSL"
+    $possibleDirs = @($pf64, $pf)
+    $opensslDir = $possibleDirs | Where-Object { Test-Path (Join-Path $_ "include\openssl\ssl.h") } | Select-Object -First 1
+
+    if ($opensslDir) {
+        Write-Host "Detected OpenSSL at: $opensslDir"
+        $MqttCmakeArgs += "-DOPENSSL_ROOT_DIR=$opensslDir"
+        $MqttCmakeArgs += "-DOPENSSL_CRYPTO_LIBRARY=$opensslDir\lib\VC\x64\MD\libcrypto.lib"
+        $MqttCmakeArgs += "-DOPENSSL_SSL_LIBRARY=$opensslDir\lib\VC\x64\MD\libssl.lib"
+    } else {
+        Write-Warning "OpenSSL not found - maybe cmake will find it ..."
+    }
+
+    Log-Information "Configuring paho.mqtt.cpp..."
+    Invoke-External cmake -S ${MqttPath} -B ${MqttBuildPath} @MqttCmakeArgs
+
+    $MqttCmakeArgs = @(
+        '--config', "${Configuration}"
+    )
+
+    if ( $VerbosePreference -eq 'Continue' ) {
+        $MqttCmakeArgs += ('--verbose')
+    }
+
+    Log-Information "Building paho.mqtt.cpp..."
+    Invoke-External cmake --build "${MqttBuildPath}" @MqttCmakeArgs
+
+    Log-Information "Install paho.mqtt.cpp..."
+    Invoke-External cmake --install "${MqttBuildPath}" --prefix "${ADVSSDepPath}" @MqttCmakeArgs
 }
 
 Build

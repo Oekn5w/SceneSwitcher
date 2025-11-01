@@ -1,12 +1,14 @@
 #pragma once
 #include "macro-action.hpp"
 #include "macro-condition.hpp"
+#include "macro-dock-settings.hpp"
 #include "macro-helpers.hpp"
 #include "macro-input.hpp"
 #include "macro-ref.hpp"
 #include "variable-string.hpp"
 #include "temp-variable.hpp"
 
+#include <future>
 #include <QString>
 #include <QByteArray>
 #include <string>
@@ -19,7 +21,7 @@
 
 namespace advss {
 
-class MacroDock;
+class GlobalMacroSettings;
 
 class Macro {
 	using TimePoint = std::chrono::high_resolution_clock::time_point;
@@ -27,8 +29,8 @@ class Macro {
 public:
 	enum class PauseStateSaveBehavior { PERSIST, PAUSE, UNPAUSE };
 
-	Macro(const std::string &name = "", const bool addHotkey = false,
-	      const bool shortCircuitEvaluation = false);
+	Macro(const std::string &name = "");
+	Macro(const std::string &name, const GlobalMacroSettings &settings);
 	~Macro();
 
 	std::string Name() const { return _name; }
@@ -77,21 +79,27 @@ public:
 	void AddHelperThread(std::thread &&);
 	void SetRunInParallel(bool parallel) { _runInParallel = parallel; }
 	bool RunInParallel() const { return _runInParallel; }
+	bool CheckInParallel() const { return _checkInParallel; }
+	void SetCheckInParallel(bool parallel);
+	bool ParallelTasksCompleted() const;
 
 	// Input variables
 	MacroInputVariables GetInputVariables() const;
 	void SetInputVariables(const MacroInputVariables &);
 
 	// Temporary variable helpers
-	std::vector<TempVariable> GetTempVars(MacroSegment *filter) const;
+	std::vector<TempVariable> GetTempVars(const MacroSegment *filter) const;
 	std::optional<const TempVariable>
 	GetTempVar(const MacroSegment *, const std::string &id) const;
 	void InvalidateTempVarValues() const;
 
 	// Macro segments
 	std::deque<std::shared_ptr<MacroCondition>> &Conditions();
+	const std::deque<std::shared_ptr<MacroCondition>> &Conditions() const;
 	std::deque<std::shared_ptr<MacroAction>> &Actions();
+	const std::deque<std::shared_ptr<MacroAction>> &Actions() const;
 	std::deque<std::shared_ptr<MacroAction>> &ElseActions();
+	const std::deque<std::shared_ptr<MacroAction>> &ElseActions() const;
 	void UpdateActionIndices();
 	void UpdateElseActionIndices();
 	void UpdateConditionIndices();
@@ -139,26 +147,7 @@ public:
 	bool PauseHotkeysEnabled() const;
 
 	// Docks
-	void EnableDock(bool);
-	bool DockEnabled() const { return _registerDock; }
-	void SetDockHasRunButton(bool value);
-	bool DockHasRunButton() const { return _dockHasRunButton; }
-	void SetDockHasPauseButton(bool value);
-	bool DockHasPauseButton() const { return _dockHasPauseButton; }
-	void SetDockHasStatusLabel(bool value);
-	bool DockHasStatusLabel() const { return _dockHasStatusLabel; }
-	void SetHighlightEnable(bool value);
-	bool DockHighlightEnabled() const { return _dockHighlight; }
-	StringVariable RunButtonText() const { return _runButtonText; }
-	void SetRunButtonText(const std::string &text);
-	StringVariable PauseButtonText() const { return _pauseButtonText; }
-	void SetPauseButtonText(const std::string &text);
-	StringVariable UnpauseButtonText() const { return _unpauseButtonText; }
-	void SetUnpauseButtonText(const std::string &text);
-	void SetConditionsTrueStatusText(const std::string &text);
-	StringVariable ConditionsTrueStatusText() const;
-	void SetConditionsFalseStatusText(const std::string &text);
-	StringVariable ConditionsFalseStatusText() const;
+	MacroDockSettings &GetDockSettings() { return _dockSettings; }
 
 private:
 	void SetupHotkeys();
@@ -174,19 +163,13 @@ private:
 	bool RunActions(bool ignorePause);
 	bool RunElseActions(bool ignorePause);
 
-	void SaveDockSettings(obs_data_t *obj, bool saveForCopy) const;
-	void LoadDockSettings(obs_data_t *obj);
-	void RemoveDock();
-	static std::string GenerateDockId();
-
 	std::string _name = "";
 	bool _die = false;
 	bool _stop = false;
-	bool _done = true;
+	std::future<void> _actionRunFuture;
 	TimePoint _lastCheckTime{};
 	TimePoint _lastUnpauseTime{};
 	TimePoint _lastExecutionTime{};
-	std::thread _backgroundThread;
 	std::vector<std::thread> _helperThreads;
 
 	std::deque<std::shared_ptr<MacroCondition>> _conditions;
@@ -204,7 +187,9 @@ private:
 	bool _conditionSateChanged = false;
 
 	bool _runInParallel = false;
+	bool _checkInParallel = false;
 	bool _matched = false;
+	std::future<void> _conditionCheckFuture;
 	bool _lastMatched = false;
 	bool _performActionsOnChange = true;
 	bool _skipExecOnStart = false;
@@ -227,23 +212,7 @@ private:
 	QList<int> _actionConditionSplitterPosition;
 	QList<int> _elseActionSplitterPosition;
 
-	bool _registerDock = false;
-	bool _dockHasRunButton = true;
-	bool _dockHasPauseButton = true;
-	bool _dockHasStatusLabel = false;
-	bool _dockHighlight = false;
-	StringVariable _runButtonText =
-		obs_module_text("AdvSceneSwitcher.macroDock.run");
-	StringVariable _pauseButtonText =
-		obs_module_text("AdvSceneSwitcher.macroDock.pause");
-	StringVariable _unpauseButtonText =
-		obs_module_text("AdvSceneSwitcher.macroDock.unpause");
-	StringVariable _conditionsTrueStatusText =
-		obs_module_text("AdvSceneSwitcher.macroDock.statusLabel.true");
-	StringVariable _conditionsFalseStatusText =
-		obs_module_text("AdvSceneSwitcher.macroDock.statusLabel.false");
-	MacroDock *_dock = nullptr;
-	std::string _dockId = GenerateDockId();
+	MacroDockSettings _dockSettings;
 };
 
 void LoadMacros(obs_data_t *obj);

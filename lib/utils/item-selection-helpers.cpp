@@ -59,7 +59,10 @@ ItemSelection::ItemSelection(std::deque<std::shared_ptr<Item>> &items,
 	  _conflictStr(conflict)
 {
 	_modify->setMaximumWidth(22);
-	SetButtonIcon(_modify, ":/settings/images/settings/general.svg");
+	SetButtonIcon(_modify,
+		      GetThemeTypeName() == "Light"
+			      ? ":/settings/images/settings/general.svg"
+			      : "theme:Dark/settings/general.svg");
 	_modify->setFlat(true);
 	if (!configureTooltip.empty()) {
 		_modify->setToolTip(obs_module_text(configureTooltip.data()));
@@ -265,6 +268,7 @@ ItemSettingsDialog::ItemSettingsDialog(const Item &settings,
 				       std::string_view select,
 				       std::string_view add,
 				       std::string_view nameConflict,
+				       bool showNameEmptyWarning,
 				       QWidget *parent)
 	: QDialog(parent),
 	  _name(new QLineEdit()),
@@ -274,7 +278,8 @@ ItemSettingsDialog::ItemSettingsDialog(const Item &settings,
 	  _items(items),
 	  _selectStr(select),
 	  _addStr(add),
-	  _conflictStr(nameConflict)
+	  _conflictStr(nameConflict),
+	  _showNameEmptyWarning(showNameEmptyWarning)
 {
 	setModal(true);
 	setWindowModality(Qt::WindowModality::WindowModal);

@@ -6,6 +6,7 @@
 
 #include <QApplication>
 #include <QEvent>
+#include <QGraphicsOpacityEffect>
 #include <QLabel>
 #include <QMouseEvent>
 #include <QScrollBar>
@@ -24,24 +25,24 @@ bool MacroSegment::Save(obs_data_t *obj) const
 	obs_data_set_bool(data, "collapsed", _collapsed);
 	obs_data_set_bool(data, "useCustomLabel", _useCustomLabel);
 	obs_data_set_string(data, "customLabel", _customLabel.c_str());
+	obs_data_set_bool(data, "enabled", _enabled);
+	obs_data_set_int(data, "version", 1);
 	obs_data_set_obj(obj, "segmentSettings", data);
 	return true;
 }
 
 bool MacroSegment::Load(obs_data_t *obj)
 {
+	OBSDataAutoRelease data = obs_data_get_obj(obj, "segmentSettings");
+	_collapsed = obs_data_get_bool(data, "collapsed");
+	_useCustomLabel = obs_data_get_bool(data, "useCustomLabel");
+	_customLabel = obs_data_get_string(data, "customLabel");
+	obs_data_set_default_bool(data, "enabled", true);
+	_enabled = obs_data_get_bool(data, "enabled");
+
 	// TODO: remove this fallback at some point
-	if (obs_data_has_user_value(obj, "segmentSettings")) {
-		OBSDataAutoRelease data =
-			obs_data_get_obj(obj, "segmentSettings");
-		_collapsed = obs_data_get_bool(data, "collapsed");
-		_useCustomLabel = obs_data_get_bool(data, "useCustomLabel");
-		_customLabel = obs_data_get_string(data, "customLabel");
-	} else {
-		_collapsed = obs_data_get_bool(obj, "collapsed");
-		_useCustomLabel = false;
-		_customLabel = obs_module_text(
-			"AdvSceneSwitcher.macroTab.segment.defaultCustomLabel");
+	if (!obs_data_has_user_value(data, "version")) {
+		_enabled = obs_data_get_bool(obj, "enabled");
 	}
 
 	ClearAvailableTempvars();
@@ -73,6 +74,16 @@ bool MacroSegment::GetHighlightAndReset()
 	return false;
 }
 
+void MacroSegment::SetEnabled(bool value)
+{
+	_enabled = value;
+}
+
+bool MacroSegment::Enabled() const
+{
+	return _enabled;
+}
+
 std::string MacroSegment::GetVariableValue() const
 {
 	if (_supportsVariableValue) {
@@ -96,7 +107,7 @@ void MacroSegment::SetupTempVars()
 void MacroSegment::ClearAvailableTempvars()
 {
 	_tempVariables.clear();
-	NotifyUIAboutTempVarChange();
+	NotifyUIAboutTempVarChange(this);
 }
 
 static std::shared_ptr<MacroSegment>
@@ -138,7 +149,7 @@ void MacroSegment::AddTempvar(const std::string &id, const std::string &name,
 
 	TempVariable var(id, name, description, sharedSegment);
 	_tempVariables.emplace_back(std::move(var));
-	NotifyUIAboutTempVarChange();
+	NotifyUIAboutTempVarChange(this);
 }
 
 void MacroSegment::SetTempVarValue(const std::string &id,
@@ -245,23 +256,6 @@ MacroSegmentEdit::MacroSegmentEdit(QWidget *parent)
 
 	QWidget::connect(_section, &Section::Collapsed, this,
 			 &MacroSegmentEdit::Collapsed);
-	// Macro signals
-	QWidget::connect(parent, SIGNAL(MacroAdded(const QString &)), this,
-			 SIGNAL(MacroAdded(const QString &)));
-	QWidget::connect(parent, SIGNAL(MacroRemoved(const QString &)), this,
-			 SIGNAL(MacroRemoved(const QString &)));
-	QWidget::connect(
-		parent, SIGNAL(MacroRenamed(const QString &, const QString &)),
-		this, SIGNAL(MacroRenamed(const QString &, const QString &)));
-	// Scene group signals
-	QWidget::connect(parent, SIGNAL(SceneGroupAdded(const QString &)), this,
-			 SIGNAL(SceneGroupAdded(const QString &)));
-	QWidget::connect(parent, SIGNAL(SceneGroupRemoved(const QString &)),
-			 this, SIGNAL(SceneGroupRemoved(const QString &)));
-	QWidget::connect(
-		parent,
-		SIGNAL(SceneGroupRenamed(const QString &, const QString)), this,
-		SIGNAL(SceneGroupRenamed(const QString &, const QString)));
 
 	auto frameLayout = new QGridLayout;
 	frameLayout->setContentsMargins(0, 0, 0, 0);
@@ -294,13 +288,8 @@ bool MacroSegmentEdit::eventFilter(QObject *obj, QEvent *ev)
 		QMouseEvent *newEvent = new QMouseEvent(
 			mouseEvent->type(),
 			_headerInfo->mapTo(this, mouseEvent->pos()),
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-			mouseEvent->globalPos(),
-#else
-			mouseEvent->globalPosition(),
-#endif
-			mouseEvent->button(), mouseEvent->buttons(),
-			mouseEvent->modifiers());
+			mouseEvent->globalPosition(), mouseEvent->button(),
+			mouseEvent->buttons(), mouseEvent->modifiers());
 		QApplication::sendEvent(parentWidget(), newEvent);
 	}
 	return QWidget::eventFilter(obj, ev);
@@ -318,11 +307,27 @@ void MacroSegmentEdit::HeaderInfoChanged(const QString &text)
 	_headerInfo->setText(text);
 }
 
-void MacroSegmentEdit::Collapsed(bool collapsed)
+void MacroSegmentEdit::Collapsed(bool collapsed) const
 {
 	if (Data()) {
 		Data()->SetCollapsed(collapsed);
 	}
+}
+
+void MacroSegmentEdit::SetDisableEffect(bool value)
+{
+	if (value) {
+		auto effect = new QGraphicsOpacityEffect(this);
+		effect->setOpacity(0.5);
+		_section->setGraphicsEffect(effect);
+	} else {
+		_section->setGraphicsEffect(nullptr);
+	}
+}
+
+void MacroSegmentEdit::SetEnableAppearance(bool value)
+{
+	SetDisableEffect(!value);
 }
 
 void MacroSegmentEdit::SetFocusPolicyOfWidgets()

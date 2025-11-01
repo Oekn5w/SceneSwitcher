@@ -112,8 +112,20 @@ void MacroActionSceneLock::ResolveVariablesToFixedValues()
 MacroActionSceneLockEdit::MacroActionSceneLockEdit(
 	QWidget *parent, std::shared_ptr<MacroActionSceneLock> entryData)
 	: QWidget(parent),
-	  _scenes(new SceneSelectionWidget(window(), true, false, true, true)),
-	  _sources(new SceneItemSelectionWidget(parent)),
+	  _scenes(new SceneSelectionWidget(this, true, false, true, true)),
+	  _sources(new SceneItemSelectionWidget(
+		  parent,
+		  {
+			  SceneItemSelection::Type::SOURCE_NAME,
+			  SceneItemSelection::Type::VARIABLE_NAME,
+			  SceneItemSelection::Type::SOURCE_NAME_PATTERN,
+			  SceneItemSelection::Type::SOURCE_GROUP,
+			  SceneItemSelection::Type::SOURCE_TYPE,
+			  SceneItemSelection::Type::INDEX,
+			  SceneItemSelection::Type::INDEX_RANGE,
+			  SceneItemSelection::Type::ALL,
+		  },
+		  SceneItemSelectionWidget::NameClashMode::ALL)),
 	  _actions(new QComboBox())
 {
 	populateActionSelection(_actions);
@@ -156,21 +168,13 @@ void MacroActionSceneLockEdit::UpdateEntryData()
 
 void MacroActionSceneLockEdit::SceneChanged(const SceneSelection &s)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_scene = s;
 }
 
 void MacroActionSceneLockEdit::SourceChanged(const SceneItemSelection &item)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_source = item;
 	emit HeaderInfoChanged(
 		QString::fromStdString(_entryData->GetShortDesc()));
@@ -180,11 +184,7 @@ void MacroActionSceneLockEdit::SourceChanged(const SceneItemSelection &item)
 
 void MacroActionSceneLockEdit::ActionChanged(int value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_action = static_cast<MacroActionSceneLock::Action>(value);
 }
 

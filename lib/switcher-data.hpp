@@ -14,10 +14,12 @@
 #include "switch-sequence.hpp"
 #include "switch-video.hpp"
 
-#include "macro-settings.hpp"
 #include "duration-control.hpp"
-#include "priority-helper.hpp"
 #include "plugin-state-helpers.hpp"
+#include "priority-helper.hpp"
+#include "regex-config.hpp"
+#include "scene-selection.hpp"
+#include "variable-string.hpp"
 
 #include <condition_variable>
 #include <vector>
@@ -57,17 +59,12 @@ public:
 	bool AnySceneTransitionStarted();
 
 	void SetPreconditions();
-	void ResetForNextInterval();
-	void AddSaveStep(std::function<void(obs_data_t *)>);
-	void AddLoadStep(std::function<void(obs_data_t *)>);
-	void AddPostLoadStep(std::function<void()>);
-	void AddIntervalResetStep(std::function<void()>, bool lock = true);
-	void RunPostLoadSteps();
 	bool CheckForMatch(OBSWeakSource &scene, OBSWeakSource &transition,
 			   int &linger, bool &setPreviousSceneAsMatch,
 			   bool &macroMatch);
 	void CheckNoMatchSwitch(bool &match, OBSWeakSource &scene,
 				OBSWeakSource &transition, int &sleep);
+	void CheckAutoStart();
 
 	/* --- Start of saving / loading section --- */
 
@@ -97,14 +94,9 @@ public:
 	bool stop = false;
 	std::condition_variable cv;
 
-	std::vector<std::function<void(obs_data_t *)>> saveSteps;
-	std::vector<std::function<void(obs_data_t *)>> loadSteps;
-	std::vector<std::function<void()>> postLoadSteps;
-	std::vector<std::function<void()>> resetIntervalSteps;
-
 	bool firstBoot = true;
 	bool transitionActive = false;
-	bool sceneColletionStop = false;
+	bool sceneCollectionStop = false;
 	bool obsIsShuttingDown = false;
 	bool firstInterval = true;
 	bool firstIntervalAfterStop = true;
@@ -117,7 +109,7 @@ public:
 	/* --- Start of General tab section --- */
 
 	int interval = default_interval;
-	OBSWeakSource nonMatchingScene;
+	SceneSelection nonMatchingScene;
 	NoMatchBehavior switchIfNotMatching = NoMatchBehavior::NO_SWITCH;
 	Duration noMatchDelay;
 	enum class StartupBehavior { PERSIST = 0, START = 1, STOP = 2 };
@@ -129,14 +121,15 @@ public:
 		RECORINDG_OR_STREAMING
 	};
 	AutoStart autoStartEvent = AutoStart::NEVER;
+	bool useAutoStartScene = false;
+	SceneSelection autoStartScene;
+	StringVariable autoStartSceneName;
+	RegexConfig autoStartSceneRegex;
 	bool enableCooldown = false;
 	Duration cooldown;
 	bool showSystemTrayNotifications = false;
 	bool transitionOverrideOverride = false;
 	bool adjustActiveTransitionType = true;
-
-	enum class LogLevel { DEFAULT, LOG_MACRO, LOG_ACTION, VERBOSE };
-	LogLevel logLevel = LogLevel::DEFAULT;
 
 	/* --- End of General tab section --- */
 
@@ -155,6 +148,7 @@ public:
 	obs_hotkey_id startHotkey = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id stopHotkey = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id toggleHotkey = OBS_INVALID_HOTKEY_ID;
+	obs_hotkey_id newMacroHotkey = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id upMacroSegment = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id downMacroSegment = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id removeMacroSegment = OBS_INVALID_HOTKEY_ID;
@@ -169,6 +163,7 @@ public:
 	bool warnPluginLoadFailure = true;
 	bool disableHints = false;
 	bool disableFilterComboboxFilter = false;
+	bool disableMacroWidgetCache = false;
 	bool hideLegacyTabs = true;
 	bool saveWindowGeo = false;
 	QPoint windowPos = {};
@@ -233,7 +228,6 @@ public:
 	bool checkPause();
 	void checkDefaultSceneTransitions();
 	void writeSceneInfoToFile();
-	void writeToStatusFile(const QString &msg);
 	void checkSwitchCooldown(bool &match);
 
 	std::deque<WindowSwitch> windowSwitches;

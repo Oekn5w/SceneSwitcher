@@ -1,6 +1,7 @@
 #include "macro-action-sequence.hpp"
 #include "layout-helpers.hpp"
 #include "macro-helpers.hpp"
+#include "macro-signals.hpp"
 
 namespace advss {
 
@@ -212,7 +213,8 @@ MacroActionSequenceEdit::MacroActionSequenceEdit(
 			 SLOT(ContinueFromClicked()));
 	QWidget::connect(_restart, SIGNAL(stateChanged(int)), this,
 			 SLOT(RestartChanged(int)));
-	QWidget::connect(window(), SIGNAL(MacroRemoved(const QString &)), this,
+	QWidget::connect(MacroSignalManager::Instance(),
+			 SIGNAL(Remove(const QString &)), this,
 			 SLOT(MacroRemove(const QString &)));
 	QWidget::connect(_actions, SIGNAL(currentIndexChanged(int)), this,
 			 SLOT(ActionChanged(int)));
@@ -279,11 +281,7 @@ void MacroActionSequenceEdit::MacroRemove(const QString &)
 
 void MacroActionSequenceEdit::Add(const std::string &name)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	MacroRef macro(name);
 	_entryData->_macros.push_back(macro);
 	adjustSize();
@@ -291,39 +289,27 @@ void MacroActionSequenceEdit::Add(const std::string &name)
 
 void MacroActionSequenceEdit::Remove(int idx)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_macros.erase(std::next(_entryData->_macros.begin(), idx));
 	adjustSize();
 }
 
 void MacroActionSequenceEdit::Up(int idx)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	std::swap(_entryData->_macros[idx], _entryData->_macros[idx - 1]);
 }
 
 void MacroActionSequenceEdit::Down(int idx)
 {
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	std::swap(_entryData->_macros[idx], _entryData->_macros[idx + 1]);
 }
 
 void MacroActionSequenceEdit::Replace(int idx, const std::string &name)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
+	GUARD_LOADING_AND_LOCK();
 	MacroRef macro(name);
-	auto lock = LockContext();
 	_entryData->_macros[idx] = macro;
 	adjustSize();
 }
@@ -344,11 +330,7 @@ void MacroActionSequenceEdit::ContinueFromClicked()
 
 void MacroActionSequenceEdit::RestartChanged(int state)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_restart = state;
 }
 
@@ -377,32 +359,20 @@ void MacroActionSequenceEdit::UpdateStatusLine()
 
 void MacroActionSequenceEdit::ActionChanged(int value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_action = static_cast<MacroActionSequence::Action>(value);
 	SetWidgetVisibility();
 }
 
 void MacroActionSequenceEdit::MacroChanged(const QString &text)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_macro = text;
 }
 
 void MacroActionSequenceEdit::ResetIndexChanged(const NumberVariable<int> &value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_resetIndex = value;
 }
 

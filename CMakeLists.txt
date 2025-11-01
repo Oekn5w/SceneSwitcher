@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16...3.26)
+cmake_minimum_required(VERSION 3.21...3.26)
 
 project(advanced-scene-switcher VERSION 1.0.0)
 
@@ -22,7 +22,7 @@ endif()
 
 # OBS 31 no longer defines find_qt so check if we need to include it for in-tree
 # builds
-if(NOT COMMAND foo)
+if(NOT COMMAND find_qt)
   include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/common/helpers_common.cmake")
 endif()
 
@@ -33,6 +33,16 @@ add_library(${LIB_NAME} SHARED)
 include(cmake/common/get_git_revision_description.cmake)
 get_git_head_revision(GIT_REFSPEC GIT_SHA1)
 git_describe(GIT_TAG)
+
+# Helper for OpenSSL
+if(OS_WINDOWS)
+  include(cmake/windows/wingetssl.cmake)
+endif()
+
+if(${GIT_TAG} STREQUAL "GIT-NOTFOUND")
+  set(GIT_TAG ${PROJECT_VERSION})
+endif()
+message(STATUS "${PROJECT_NAME} version: ${GIT_TAG}")
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/cmake/common/version.cpp.in"
                "${CMAKE_CURRENT_BINARY_DIR}/lib/version.cpp" @ONLY)
 
@@ -98,8 +108,6 @@ target_sources(
           lib/macro/macro-action-macro.hpp
           lib/macro/macro-action-queue.cpp
           lib/macro/macro-action-queue.hpp
-          lib/macro/macro-action-script.cpp
-          lib/macro/macro-action-script.hpp
           lib/macro/macro-action-variable.cpp
           lib/macro/macro-action-variable.hpp
           lib/macro/macro-action.cpp
@@ -112,8 +120,6 @@ target_sources(
           lib/macro/macro-condition-macro.hpp
           lib/macro/macro-condition-queue.cpp
           lib/macro/macro-condition-queue.hpp
-          lib/macro/macro-condition-script.cpp
-          lib/macro/macro-condition-script.hpp
           lib/macro/macro-condition-tempvar.cpp
           lib/macro/macro-condition-tempvar.hpp
           lib/macro/macro-condition-variable.cpp
@@ -122,6 +128,12 @@ target_sources(
           lib/macro/macro-condition.hpp
           lib/macro/macro-dock.cpp
           lib/macro/macro-dock.hpp
+          lib/macro/macro-dock-settings.hpp
+          lib/macro/macro-dock-settings.cpp
+          lib/macro/macro-dock-window.cpp
+          lib/macro/macro-dock-window.hpp
+          lib/macro/macro-edit.cpp
+          lib/macro/macro-edit.hpp
           lib/macro/macro-export-import-dialog.cpp
           lib/macro/macro-export-import-dialog.hpp
           lib/macro/macro-helpers.cpp
@@ -134,22 +146,21 @@ target_sources(
           lib/macro/macro-ref.hpp
           lib/macro/macro-run-button.cpp
           lib/macro/macro-run-button.hpp
-          lib/macro/macro-script-handler.cpp
-          lib/macro/macro-script-handler.hpp
           lib/macro/macro-segment-copy-paste.cpp
           lib/macro/macro-segment-copy-paste.hpp
           lib/macro/macro-segment-list.cpp
           lib/macro/macro-segment-list.hpp
-          lib/macro/macro-segment-script.cpp
-          lib/macro/macro-segment-script.hpp
           lib/macro/macro-segment-selection.cpp
           lib/macro/macro-segment-selection.hpp
+          lib/macro/macro-segment-unknown.hpp
           lib/macro/macro-segment.cpp
           lib/macro/macro-segment.hpp
           lib/macro/macro-selection.cpp
           lib/macro/macro-selection.hpp
           lib/macro/macro-settings.cpp
           lib/macro/macro-settings.hpp
+          lib/macro/macro-signals.cpp
+          lib/macro/macro-signals.hpp
           lib/macro/macro-tab.cpp
           lib/macro/macro-tree.cpp
           lib/macro/macro-tree.hpp
@@ -167,6 +178,8 @@ target_sources(
           lib/utils/auto-update-tooltip-label.hpp
           lib/utils/backup.cpp
           lib/utils/backup.hpp
+          lib/utils/canvas-helpers.cpp
+          lib/utils/canvas-helpers.hpp
           lib/utils/condition-logic.cpp
           lib/utils/condition-logic.hpp
           lib/utils/curl-helper.cpp
@@ -190,6 +203,8 @@ target_sources(
           lib/utils/help-icon.cpp
           lib/utils/item-selection-helpers.cpp
           lib/utils/item-selection-helpers.hpp
+          lib/utils/json-helpers.cpp
+          lib/utils/json-helpers.hpp
           lib/utils/layout-helpers.cpp
           lib/utils/layout-helpers.hpp
           lib/utils/list-controls.cpp
@@ -216,17 +231,14 @@ target_sources(
           lib/utils/plugin-state-helpers.hpp
           lib/utils/priority-helper.cpp
           lib/utils/priority-helper.hpp
-          lib/utils/properties-view.cpp
-          lib/utils/properties-view.hpp
-          lib/utils/properties-view.moc.hpp
           lib/utils/regex-config.cpp
           lib/utils/regex-config.hpp
+          lib/utils/resizable-widget.cpp
+          lib/utils/resizable-widget.hpp
           lib/utils/resizing-text-edit.cpp
           lib/utils/resizing-text-edit.hpp
           lib/utils/resource-table.cpp
           lib/utils/resource-table.hpp
-          lib/utils/resource-table-hotkey-handler.cpp
-          lib/utils/resource-table-hotkey-handler.hpp
           lib/utils/scene-selection.cpp
           lib/utils/scene-selection.hpp
           lib/utils/scene-switch-helpers.cpp
@@ -295,9 +307,16 @@ include(cmake/common/advss_helpers.cmake)
 setup_obs_lib_dependency(${LIB_NAME})
 setup_obs_lib_dependency(${PROJECT_NAME})
 
-find_qt(COMPONENTS Widgets Core)
-target_link_libraries(${PROJECT_NAME} PRIVATE Qt::Core Qt::Widgets)
-target_link_libraries(${LIB_NAME} PRIVATE Qt::Core Qt::Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Core)
+target_link_libraries(${PROJECT_NAME} PRIVATE Qt6::Core Qt6::Widgets)
+target_link_libraries(${LIB_NAME} PRIVATE Qt6::Core Qt6::Widgets)
+
+# Ignore QCheckBox::stateChanged deprecation warning until minimum supported Qt
+# version is at least Qt 6.7, which introduces QCheckBox::checkStateChanged
+if(Qt6_VERSION VERSION_GREATER "6.0.0")
+  target_compile_definitions(${LIB_NAME} PRIVATE QT_NO_DEPRECATED_WARNINGS)
+endif()
+
 target_compile_options(
   ${PROJECT_NAME}
   PRIVATE
@@ -345,6 +364,21 @@ else()
   find_package(nlohmann_json REQUIRED)
 endif()
 target_link_libraries(${LIB_NAME} PUBLIC nlohmann_json::nlohmann_json)
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/deps/jsoncons/CMakeLists.txt")
+  # Don't build jsoncons unit tests as they are causing compilation issues and
+  # won't be executed either way
+  if(OS_MACOS)
+    cmake_policy(SET CMP0077 NEW)
+  endif()
+  set(JSONCONS_BUILD_TESTS
+      OFF
+      CACHE BOOL "" FORCE)
+
+  add_subdirectory(deps/jsoncons EXCLUDE_FROM_ALL)
+  target_link_libraries(${LIB_NAME} PRIVATE jsoncons)
+  target_compile_definitions(${LIB_NAME} PRIVATE JSONPATH_SUPPORT=1)
+endif()
 
 find_package(CURL QUIET)
 find_package(Libcurl QUIET)
@@ -399,6 +433,7 @@ else()
   set_target_properties(${LIB_NAME} PROPERTIES PREFIX "")
   set_target_properties(${LIB_NAME} PROPERTIES SOVERSION 1)
 
+  find_package(Qt6 REQUIRED COMPONENTS DBus)
   find_package(X11 REQUIRED COMPONENTS Xss)
   target_include_directories(${LIB_NAME} PRIVATE "${X11_INCLUDE_DIR}"
                                                  "${X11_Xss_INCLUDE_PATH}")
@@ -413,7 +448,12 @@ else()
     set(PROCESS_CONDITION_SUPPORTED 1)
   endif()
   if(PROCPS2_INCLUDE_DIR)
-    message(STATUS "${PROJECT_NAME} using libproc2")
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(libproc2 IMPORTED_TARGET libproc2<4.0.5 QUIET)
+    if(libproc2_FOUND)
+      target_compile_definitions(${LIB_NAME} PRIVATE PROCPS2_USE_INFO)
+    endif()
+    pkg_check_modules(libproc2 REQUIRED IMPORTED_TARGET libproc2)
     set(PROC_INCLUDE_DIR "${PROCPS2_INCLUDE_DIR}")
     target_compile_definitions(${LIB_NAME} PRIVATE PROCPS2_AVAILABLE)
     set(PROCESS_CONDITION_SUPPORTED 1)
@@ -425,7 +465,11 @@ else()
     )
   endif()
   target_include_directories(${LIB_NAME} PRIVATE "${PROC_INCLUDE_DIR}")
-  target_sources(${LIB_NAME} PRIVATE lib/linux/advanced-scene-switcher-nix.cpp)
+  target_sources(${LIB_NAME} PRIVATE lib/linux/advanced-scene-switcher-nix.cpp
+                                     lib/linux/kwin-helpers.cpp)
+
+  # Don't include irrelevant folders into sources archive
+  list(APPEND CPACK_SOURCE_IGNORE_FILES "\\.deps/.*")
 endif()
 
 if(NOT OS_WINDOWS)

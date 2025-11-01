@@ -15,12 +15,14 @@ target_sources(
           macro-action-filter.hpp
           macro-action-hotkey.cpp
           macro-action-hotkey.hpp
-          macro-action-http.cpp
-          macro-action-http.hpp
+          macro-action-http-legacy.cpp
+          macro-action-http-legacy.hpp
           macro-action-log.cpp
           macro-action-log.hpp
           macro-action-media.cpp
           macro-action-media.hpp
+          macro-action-obs-settings.cpp
+          macro-action-obs-settings.hpp
           macro-action-osc.cpp
           macro-action-osc.hpp
           macro-action-plugin-state.cpp
@@ -89,6 +91,8 @@ target_sources(
           macro-condition-filter.hpp
           macro-condition-folder.cpp
           macro-condition-folder.hpp
+          macro-condition-game-capture.cpp
+          macro-condition-game-capture.hpp
           macro-condition-hotkey.cpp
           macro-condition-hotkey.hpp
           macro-condition-idle.cpp
@@ -117,6 +121,8 @@ target_sources(
           macro-condition-scene-visibility.hpp
           macro-condition-scene.cpp
           macro-condition-scene.hpp
+          macro-condition-screenshot.cpp
+          macro-condition-screenshot.hpp
           macro-condition-slideshow.cpp
           macro-condition-slideshow.hpp
           macro-condition-source.cpp
@@ -148,8 +154,6 @@ target_sources(
           utils/filter-selection.hpp
           utils/hotkey-helpers.cpp
           utils/hotkey-helpers.hpp
-          utils/json-helpers.cpp
-          utils/json-helpers.hpp
           utils/monitor-helpers.cpp
           utils/monitor-helpers.hpp
           utils/osc-helpers.cpp
@@ -179,7 +183,9 @@ target_sources(
           utils/websocket-helpers.cpp
           utils/websocket-helpers.hpp
           utils/websocket-tab.cpp
-          utils/websocket-tab.hpp)
+          utils/websocket-tab.hpp
+          utils/window-selection.cpp
+          utils/window-selection.hpp)
 
 if(OS_WINDOWS)
   target_sources(${PROJECT_NAME} PRIVATE utils/windows/windows.cpp)

@@ -1,6 +1,7 @@
 #include "macro-condition-macro.hpp"
 #include "layout-helpers.hpp"
 #include "macro-action-edit.hpp"
+#include "macro-signals.hpp"
 #include "macro.hpp"
 
 namespace advss {
@@ -26,6 +27,8 @@ const static std::map<MacroConditionMacro::Type, std::string>
 		 "AdvSceneSwitcher.condition.macro.type.actionEnabled"},
 		{MacroConditionMacro::Type::PAUSED,
 		 "AdvSceneSwitcher.condition.macro.type.paused"},
+		{MacroConditionMacro::Type::ACTIONS_PERFORMED,
+		 "AdvSceneSwitcher.condition.macro.type.actionsPerformed"},
 };
 
 const static std::map<MacroConditionMacro::CounterCondition, std::string>
@@ -121,6 +124,16 @@ bool MacroConditionMacro::CheckPauseState()
 	return macro->Paused();
 }
 
+bool MacroConditionMacro::CheckActionsPerformed()
+{
+	auto macro = _macro.GetMacro();
+	if (!macro) {
+		return false;
+	}
+
+	return macro->WasExecutedSince(macro->LastConditionCheckTime());
+}
+
 bool MacroConditionMacro::CheckCountCondition()
 {
 	auto macro = _macro.GetMacro();
@@ -158,6 +171,8 @@ bool MacroConditionMacro::CheckCondition()
 		return CheckActionStateCondition();
 	case Type::PAUSED:
 		return CheckPauseState();
+	case Type::ACTIONS_PERFORMED:
+		return CheckActionsPerformed();
 	default:
 		break;
 	}
@@ -307,7 +322,8 @@ MacroConditionMacroEdit::MacroConditionMacroEdit(
 
 	QWidget::connect(_macros, SIGNAL(currentTextChanged(const QString &)),
 			 this, SLOT(MacroChanged(const QString &)));
-	QWidget::connect(parent, SIGNAL(MacroRemoved(const QString &)), this,
+	QWidget::connect(MacroSignalManager::Instance(),
+			 SIGNAL(Remove(const QString &)), this,
 			 SLOT(MacroRemove(const QString &)));
 	QWidget::connect(_types, SIGNAL(currentIndexChanged(int)), this,
 			 SLOT(TypeChanged(int)));
@@ -414,6 +430,9 @@ void MacroConditionMacroEdit::SetupWidgets()
 	case MacroConditionMacro::Type::PAUSED:
 		SetupPauseWidgets();
 		break;
+	case MacroConditionMacro::Type::ACTIONS_PERFORMED:
+		SetupActionsPerformedWidgets();
+		break;
 	default:
 		break;
 	}
@@ -472,6 +491,14 @@ void MacroConditionMacroEdit::SetupPauseWidgets()
 		     _settingsLine1, {{"{{macros}}", _macros}});
 }
 
+void MacroConditionMacroEdit::SetupActionsPerformedWidgets()
+{
+	PlaceWidgets(
+		obs_module_text(
+			"AdvSceneSwitcher.condition.macro.actionsPerformed.entry"),
+		_settingsLine1, {{"{{macros}}", _macros}});
+}
+
 void MacroConditionMacroEdit::SetWidgetVisibility()
 {
 	_macros->setVisible(
@@ -481,7 +508,9 @@ void MacroConditionMacroEdit::SetWidgetVisibility()
 			MacroConditionMacro::Type::ACTION_DISABLED ||
 		_entryData->GetType() ==
 			MacroConditionMacro::Type::ACTION_ENABLED ||
-		_entryData->GetType() == MacroConditionMacro::Type::PAUSED);
+		_entryData->GetType() == MacroConditionMacro::Type::PAUSED ||
+		_entryData->GetType() ==
+			MacroConditionMacro::Type::ACTIONS_PERFORMED);
 	_counterConditions->setVisible(_entryData->GetType() ==
 				       MacroConditionMacro::Type::COUNT);
 	_count->setVisible(_entryData->GetType() ==
@@ -538,11 +567,7 @@ void MacroConditionMacroEdit::UpdateEntryData()
 
 void MacroConditionMacroEdit::MacroChanged(const QString &text)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_macro = text;
 	_actionIndex->SetMacro(_entryData->_macro.GetMacro());
 	emit HeaderInfoChanged(
@@ -551,21 +576,13 @@ void MacroConditionMacroEdit::MacroChanged(const QString &text)
 
 void MacroConditionMacroEdit::CountChanged(const NumberVariable<int> &value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_count = value;
 }
 
 void MacroConditionMacroEdit::CountConditionChanged(int cond)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_counterCondition =
 		static_cast<MacroConditionMacro::CounterCondition>(cond);
 }
@@ -590,11 +607,7 @@ void MacroConditionMacroEdit::MacroRemove(const QString &)
 
 void MacroConditionMacroEdit::TypeChanged(int type)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->SetType(static_cast<MacroConditionMacro::Type>(type));
 	SetupWidgets();
 }
@@ -640,11 +653,7 @@ void MacroConditionMacroEdit::UpdatePaused()
 
 void MacroConditionMacroEdit::MultiStateConditionChanged(int cond)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_multiSateCondition =
 		static_cast<MacroConditionMacro::MultiStateCondition>(cond);
 }
@@ -652,21 +661,13 @@ void MacroConditionMacroEdit::MultiStateConditionChanged(int cond)
 void MacroConditionMacroEdit::MultiStateCountChanged(
 	const NumberVariable<int> &value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_multiSateCount = value;
 }
 
 void MacroConditionMacroEdit::Add(const std::string &name)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	MacroRef macro(name);
 	_entryData->_macros.push_back(macro);
 	adjustSize();
@@ -675,11 +676,7 @@ void MacroConditionMacroEdit::Add(const std::string &name)
 
 void MacroConditionMacroEdit::Remove(int idx)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_macros.erase(std::next(_entryData->_macros.begin(), idx));
 	adjustSize();
 	updateGeometry();
@@ -687,12 +684,8 @@ void MacroConditionMacroEdit::Remove(int idx)
 
 void MacroConditionMacroEdit::Replace(int idx, const std::string &name)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
+	GUARD_LOADING_AND_LOCK();
 	MacroRef macro(name);
-	auto lock = LockContext();
 	_entryData->_macros[idx] = macro;
 	adjustSize();
 	updateGeometry();
@@ -700,11 +693,7 @@ void MacroConditionMacroEdit::Replace(int idx, const std::string &name)
 
 void MacroConditionMacroEdit::ActionIndexChanged(const IntVariable &value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_actionIndex = value;
 }
 

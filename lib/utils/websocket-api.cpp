@@ -1,7 +1,9 @@
 #include "websocket-api.hpp"
-#include "log-helper.hpp"
 #include "obs-websocket-api.h"
 #include "plugin-state-helpers.hpp"
+
+// Must be after "obs-websocket-api.h" to avoid logging function conflict
+#include "log-helper.hpp"
 
 #include <mutex>
 
@@ -23,6 +25,14 @@ static bool setupDone = setup();
 bool setup()
 {
 	AddPluginPostLoadStep(registerWebsocketVendor);
+	AddStartStep([]() {
+		SendWebsocketVendorEvent("AdvancedSceneSwitcherStarted",
+					 nullptr);
+	});
+	AddStopStep([]() {
+		SendWebsocketVendorEvent("AdvancedSceneSwitcherStopped",
+					 nullptr);
+	});
 	return true;
 }
 
@@ -109,6 +119,9 @@ void RegisterWebsocketRequest(
 
 void SendWebsocketVendorEvent(const std::string &eventName, obs_data_t *data)
 {
+	if (OBSIsShuttingDown()) {
+		return;
+	}
 	obs_websocket_vendor_emit_event(vendor, eventName.c_str(), data);
 }
 

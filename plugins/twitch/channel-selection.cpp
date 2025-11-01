@@ -1,4 +1,5 @@
 #include "channel-selection.hpp"
+#include "log-helper.hpp"
 #include "twitch-helpers.hpp"
 #include "token.hpp"
 
@@ -30,13 +31,18 @@ void TwitchChannel::Save(obs_data_t *obj) const
 std::string TwitchChannel::GetUserID(const TwitchToken &token) const
 {
 	static std::map<std::string, std::string> userIDCache;
+	if (!token.IsValid()) {
+		vblog(LOG_INFO, "%s() failed: token invalid", __func__);
+		return "invalid";
+	}
+
 	auto it = userIDCache.find(std::string(_name));
 	if (it != userIDCache.end()) {
 		return it->second;
 	}
 
 	auto res = SendGetRequest(token, "https://api.twitch.tv",
-				  "/helix/users", {{"login", _name}});
+				  "/helix/users", {{"login", _name}}, true);
 
 	if (res.status == 400) {
 		userIDCache[_name] = "invalid";
@@ -46,7 +52,7 @@ std::string TwitchChannel::GetUserID(const TwitchToken &token) const
 	}
 
 	if (res.status != 200) {
-		blog(LOG_INFO, "failed to get Twitch user id from token! (%d)",
+		blog(LOG_INFO, "failed to get Twitch user id for channel! (%d)",
 		     res.status);
 		return "invalid";
 	}
@@ -89,7 +95,7 @@ getStringArrayHelper(const OBSDataAutoRelease &data, const std::string &value)
 	}
 	try {
 		auto json = nlohmann::json::parse(jsonStr);
-		auto array = json[value];
+		auto &array = json[value];
 		if (!array.is_array()) {
 			return result;
 		}
@@ -103,7 +109,7 @@ getStringArrayHelper(const OBSDataAutoRelease &data, const std::string &value)
 }
 
 std::optional<ChannelLiveInfo>
-TwitchChannel::GetLiveInfo(const TwitchToken &token)
+TwitchChannel::GetLiveInfo(const TwitchToken &token) const
 {
 	auto id = GetUserID(token);
 	if (!IsValid(id)) {
@@ -145,7 +151,8 @@ TwitchChannel::GetLiveInfo(const TwitchToken &token)
 	return info;
 }
 
-std::optional<ChannelInfo> TwitchChannel::GetInfo(const TwitchToken &token)
+std::optional<ChannelInfo>
+TwitchChannel::GetInfo(const TwitchToken &token) const
 {
 	auto id = GetUserID(token);
 	if (!IsValid(id)) {
@@ -190,7 +197,7 @@ void TwitchChannel::ResolveVariables()
 	_name.ResolveVariables();
 }
 
-bool TwitchChannel::IsValid(const std::string &id) const
+bool TwitchChannel::IsValid(const std::string &id)
 {
 	return id != "invalid" && !id.empty();
 }

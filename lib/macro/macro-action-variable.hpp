@@ -28,8 +28,8 @@ public:
 	int GetSegmentIndexValue() const;
 	void ResolveVariablesToFixedValues();
 
-	enum class Type {
-		SET_FIXED_VALUE,
+	enum class Action {
+		SET_VALUE,
 		APPEND,
 		APPEND_VAR,
 		INCREMENT,
@@ -52,9 +52,12 @@ public:
 		SWAP_VALUES,
 		TRIM,
 		CHANGE_CASE,
+		RANDOM_NUMBER,
+		QUERY_JSON,
+		ARRAY_JSON,
 	};
 
-	Type _type = Type::SET_FIXED_VALUE;
+	Action _action = Action::SET_VALUE;
 	std::weak_ptr<Variable> _variable;
 	std::weak_ptr<Variable> _variable2;
 	StringVariable _strValue = "";
@@ -99,6 +102,12 @@ public:
 	};
 
 	CaseType _caseType = CaseType::LOWER_CASE;
+	DoubleVariable _randomNumberStart = 0;
+	DoubleVariable _randomNumberEnd = 100;
+	bool _generateInteger = true;
+
+	StringVariable _jsonQuery = "$.some.nested.value";
+	IntVariable _jsonIndex = 0;
 
 private:
 	void DecrementCurrentSegmentVariableRef();
@@ -108,6 +117,7 @@ private:
 	void HandleMathExpression(Variable *);
 	void HandleCaseChange(Variable *);
 	void SetToSceneItemName(Variable *);
+	void GenerateRandomNumber(Variable *);
 
 	std::weak_ptr<MacroSegment> _macroSegment;
 	int _segmentIdxLoadValue = -1;
@@ -161,6 +171,11 @@ private slots:
 	void StringLengthChanged(const NumberVariable<int> &);
 	void CharSelectionChanged(const QString &);
 	void CaseTypeChanged(int index);
+	void RandomNumberStartChanged(const NumberVariable<double> &);
+	void RandomNumberEndChanged(const NumberVariable<double> &);
+	void GenerateIntegerChanged(int);
+	void JsonQueryChanged();
+	void JsonIndexChanged(const NumberVariable<int> &);
 
 signals:
 	void HeaderInfoChanged(const QString &);
@@ -206,6 +221,13 @@ private:
 	VariableSpinBox *_stringLength;
 	SingleCharSelection *_paddingCharSelection;
 	FilterComboBox *_caseType;
+	VariableDoubleSpinBox *_randomNumberStart;
+	VariableDoubleSpinBox *_randomNumberEnd;
+	QCheckBox *_generateInteger;
+	QVBoxLayout *_randomLayout;
+	VariableLineEdit *_jsonQuery;
+	QLabel *_jsonQueryHelp;
+	VariableSpinBox *_jsonIndex;
 	QHBoxLayout *_entryLayout;
 
 	std::shared_ptr<MacroActionVariable> _entryData;

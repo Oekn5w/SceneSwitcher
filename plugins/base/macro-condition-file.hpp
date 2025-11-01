@@ -35,18 +35,21 @@ public:
 		MATCH,
 		CONTENT_CHANGE,
 		DATE_CHANGE,
+		EXISTS,
+		IS_FILE,
+		IS_FOLDER,
 	};
 	void SetCondition(Condition condition);
 	Condition GetCondition() const { return _condition; }
 
 	StringVariable _file = obs_module_text("AdvSceneSwitcher.enterPath");
 	StringVariable _text = obs_module_text("AdvSceneSwitcher.enterText");
-	FileType _fileType = FileType::LOCAL;
 	RegexConfig _regex;
 
 	// TODO: Remove in future version
 	bool _useTime = false;
 	bool _onlyMatchIfChanged = false;
+	FileType _fileType = FileType::LOCAL;
 
 private:
 	bool MatchFileContent(QString &filedata);
@@ -59,6 +62,15 @@ private:
 	Condition _condition = Condition::MATCH;
 	QDateTime _lastMod;
 	size_t _lastHash = 0;
+	std::string _lastFile;
+	std::string _basename;
+	std::string _basenameComplete;
+	std::string _suffix;
+	std::string _suffixComplete;
+	std::string _filename;
+	std::string _absoluteFilePath;
+	std::string _absolutePath;
+	bool _isAbsolutePath = false;
 	static bool _registered;
 	static const std::string id;
 };

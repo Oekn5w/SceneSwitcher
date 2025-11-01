@@ -332,12 +332,8 @@ MacroConditionTransitionEdit::MacroConditionTransitionEdit(
 
 void MacroConditionTransitionEdit::ConditionChanged(int index)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
 	{
-		auto lock = LockContext();
+		GUARD_LOADING_AND_LOCK();
 		_entryData->_condition =
 			static_cast<MacroConditionTransition::Condition>(
 				_conditions->itemData(index).toInt());
@@ -350,11 +346,7 @@ void MacroConditionTransitionEdit::ConditionChanged(int index)
 void MacroConditionTransitionEdit::TransitionChanged(
 	const TransitionSelection &t)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_transition = t;
 	_entryData->ConnectToTransitionSignals();
 	emit HeaderInfoChanged(
@@ -363,21 +355,13 @@ void MacroConditionTransitionEdit::TransitionChanged(
 
 void MacroConditionTransitionEdit::SceneChanged(const SceneSelection &s)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_scene = s;
 }
 
 void MacroConditionTransitionEdit::DurationChanged(const Duration &dur)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_duration = dur;
 }
 
@@ -407,15 +391,16 @@ void MacroConditionTransitionEdit::SetWidgetVisibility()
 		_entryData->_condition ==
 		MacroConditionTransition::Condition::DURATION);
 
-	bool addCurrent = _entryData->_condition ==
-			  MacroConditionTransition::Condition::DURATION;
-	bool addAny = _entryData->_condition ==
-			      MacroConditionTransition::Condition::STARTED ||
-		      _entryData->_condition ==
-			      MacroConditionTransition::Condition::ENDED ||
-		      _entryData->_condition ==
-			      MacroConditionTransition::Condition::VIDEO_ENDED;
-	_transitions->Repopulate(addCurrent, addAny);
+	_transitions->EnableCurrentEntry(
+		_entryData->_condition ==
+		MacroConditionTransition::Condition::DURATION);
+	_transitions->EnableAnyEntry(
+		_entryData->_condition ==
+			MacroConditionTransition::Condition::STARTED ||
+		_entryData->_condition ==
+			MacroConditionTransition::Condition::ENDED ||
+		_entryData->_condition ==
+			MacroConditionTransition::Condition::VIDEO_ENDED);
 }
 
 void MacroConditionTransitionEdit::UpdateEntryData()

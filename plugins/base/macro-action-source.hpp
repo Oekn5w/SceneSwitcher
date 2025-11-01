@@ -52,6 +52,7 @@ public:
 		INDIVIDUAL_MANUAL,
 		INDIVIDUAL_TEMPVAR,
 		JSON_STRING,
+		INDIVIDUAL_LIST_ENTRY,
 	};
 	SettingsInputMethod _settingsInputMethod =
 		SettingsInputMethod::INDIVIDUAL_MANUAL;
@@ -80,7 +81,7 @@ public:
 private slots:
 	void SourceChanged(const SourceSelection &);
 	void ActionChanged(int value);
-	void ButtonChanged(int idx);
+	void ButtonChanged(const SourceSettingButton &);
 	void GetSettingsClicked();
 	void SettingsStringChanged();
 	void DeinterlaceModeChanged(int);
@@ -99,7 +100,7 @@ private:
 
 	SourceSelectionWidget *_sources;
 	QComboBox *_actions;
-	QComboBox *_settingsButtons;
+	SourceSettingsButtonSelection *_settingsButtons;
 	QHBoxLayout *_settingsLayout;
 	QComboBox *_settingsInputMethods;
 	VariableTextEdit *_manualSettingValue;

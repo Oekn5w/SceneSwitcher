@@ -62,6 +62,11 @@ void FilterComboBox::SetFilterBehaviourEnabled(bool value)
 	FilterComboBox::_filteringEnabled = value;
 }
 
+void FilterComboBox::SetAllowUnmatchedSelection(bool allow)
+{
+	_allowUnmatchedSelection = allow;
+}
+
 void FilterComboBox::setCurrentText(const QString &text)
 {
 	if (_filteringEnabled) {
@@ -79,10 +84,25 @@ void FilterComboBox::setItemText(int index, const QString &text)
 	}
 }
 
+QSize FilterComboBox::sizeHint() const
+{
+	QSize size = QComboBox::sizeHint();
+
+	if (!_filteringEnabled) {
+		return QComboBox::sizeHint();
+	}
+
+	QFontMetrics fm(font());
+	int extra = fm.horizontalAdvance("X") * 2; // Add padding
+	size.setWidth(size.width() + extra);
+
+	return size;
+}
+
 void FilterComboBox::focusOutEvent(QFocusEvent *event)
 {
 	// Reset on invalid selection
-	if (findText(currentText()) == -1) {
+	if (!_allowUnmatchedSelection && findText(currentText()) == -1) {
 		setCurrentIndex(-1);
 		Emit(-1, "");
 	}
@@ -91,7 +111,7 @@ void FilterComboBox::focusOutEvent(QFocusEvent *event)
 	_lastCompleterHighlightRow = -1;
 }
 
-static int findXthOccurance(QComboBox *list, int count, const QString &value)
+static int findXthOccurrence(QComboBox *list, int count, const QString &value)
 {
 	if (value.isEmpty() || count < 1) {
 		return -1;
@@ -116,7 +136,7 @@ void FilterComboBox::CompleterHighlightChanged(const QModelIndex &index)
 {
 	_lastCompleterHighlightRow = index.row();
 	const auto text = currentText();
-	int idx = findXthOccurance(this, _lastCompleterHighlightRow, text);
+	int idx = findXthOccurrence(this, _lastCompleterHighlightRow, text);
 	if (idx == -1) {
 		return;
 	}
@@ -128,7 +148,7 @@ void FilterComboBox::TextChanged(const QString &text)
 	auto c = completer();
 	const bool completerActive = c->completionCount() > 0;
 	int count = completerActive ? _lastCompleterHighlightRow + 1 : 1;
-	int idx = findXthOccurance(this, count, text);
+	int idx = findXthOccurrence(this, count, text);
 	if (idx == -1) {
 		return;
 	}

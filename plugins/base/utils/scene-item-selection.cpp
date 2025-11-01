@@ -6,8 +6,17 @@
 #include "ui-helpers.hpp"
 
 #include <set>
+#include <variant>
+
+using NameClashMode = advss::SceneItemSelectionWidget::NameClashMode;
+using ConflictIndex = std::variant<int, NameClashMode>;
+
+Q_DECLARE_METATYPE(NameClashMode)
+Q_DECLARE_METATYPE(ConflictIndex);
 
 namespace advss {
+
+using NameConflictSelection = SceneItemSelection::NameConflictSelection;
 
 constexpr std::string_view typeSaveName = "type";
 constexpr std::string_view itemSaveName = "item";
@@ -16,25 +25,6 @@ constexpr std::string_view indexEndSaveName = "indexEnd";
 constexpr std::string_view nameConflictIndexSaveName = "idx";
 constexpr std::string_view nameConflictIndexSelectionSaveName = "idxType";
 constexpr std::string_view patternSaveName = "pattern";
-
-const static std::map<SceneItemSelection::Type, std::string> types = {
-	{SceneItemSelection::Type::SOURCE_NAME,
-	 "AdvSceneSwitcher.sceneItemSelection.type.sourceName"},
-	{SceneItemSelection::Type::VARIABLE_NAME,
-	 "AdvSceneSwitcher.sceneItemSelection.type.sourceVariable"},
-	{SceneItemSelection::Type::SOURCE_NAME_PATTERN,
-	 "AdvSceneSwitcher.sceneItemSelection.type.sourceNamePattern"},
-	{SceneItemSelection::Type::SOURCE_GROUP,
-	 "AdvSceneSwitcher.sceneItemSelection.type.sourceGroup"},
-	{SceneItemSelection::Type::SOURCE_TYPE,
-	 "AdvSceneSwitcher.sceneItemSelection.type.sourceType"},
-	{SceneItemSelection::Type::INDEX,
-	 "AdvSceneSwitcher.sceneItemSelection.type.index"},
-	{SceneItemSelection::Type::INDEX_RANGE,
-	 "AdvSceneSwitcher.sceneItemSelection.type.indexRange"},
-	{SceneItemSelection::Type::ALL,
-	 "AdvSceneSwitcher.sceneItemSelection.type.all"},
-};
 
 /* ------------------------------------------------------------------------- */
 
@@ -125,7 +115,8 @@ static int getCountOfSceneItemOccurance(const SceneSelection &s,
 			obs_scene_enum_items(scene, countSceneItemName, data);
 			return true;
 		};
-		obs_enum_scenes(enumScenes, &data);
+		OBSCanvasAutoRelease canvas = OBSGetStrongRef(s.GetCanvas());
+		obs_canvas_enum_scenes(canvas, enumScenes, &data);
 	} else {
 		auto source = obs_weak_source_get_source(s.GetScene(false));
 		auto scene = obs_scene_from_source(source);
@@ -332,7 +323,7 @@ void SceneItemSelection::ResolveVariables()
 	}
 }
 
-void SceneItemSelection::ReduceBadedOnIndexSelection(
+void SceneItemSelection::ReduceBasedOnIndexSelection(
 	std::vector<OBSSceneItem> &items) const
 {
 	if (_nameConflictSelectionType ==
@@ -368,7 +359,7 @@ std::vector<OBSSceneItem> SceneItemSelection::GetSceneItemsByName(
 		name = GetWeakSourceName(_source);
 	}
 	auto items = getSceneItemsWithName(scene, name);
-	ReduceBadedOnIndexSelection(items);
+	ReduceBasedOnIndexSelection(items);
 	return items;
 }
 
@@ -380,7 +371,7 @@ std::vector<OBSSceneItem> SceneItemSelection::GetSceneItemsByPattern(
 	NamePatternMatchData data{_pattern, _regex};
 	obs_scene_enum_items(scene, getSceneItemsByPatternHelper, &data);
 	obs_source_release(s);
-	ReduceBadedOnIndexSelection(data.items);
+	ReduceBasedOnIndexSelection(data.items);
 	return data.items;
 }
 
@@ -405,7 +396,7 @@ std::vector<OBSSceneItem> SceneItemSelection::GetSceneItemsByType(
 	GroupData data{_sourceType};
 	obs_scene_enum_items(scene, getSceneItemsOfType, &data);
 	obs_source_release(s);
-	ReduceBadedOnIndexSelection(data.items);
+	ReduceBasedOnIndexSelection(data.items);
 	return data.items;
 }
 
@@ -475,12 +466,38 @@ SceneItemSelection::GetSceneItems(const SceneSelection &sceneSelection) const
 	case Type::INDEX_RANGE:
 		return GetSceneItemsByIdx(sceneSelection);
 	case Type::ALL:
+	case Type::ANY:
 		return GetAllSceneItems(sceneSelection);
 	default:
 		break;
 	}
 
 	return {};
+}
+
+bool SceneItemSelection::IsSelectionOfTypeAny() const
+{
+	if (_type == Type::ANY) {
+		return true;
+	}
+
+	if (_type == Type::ALL) {
+		return false;
+	}
+
+	if (_type == Type::INDEX_RANGE) {
+		return false;
+	}
+
+	if (_nameConflictSelectionType == NameConflictSelection::ANY) {
+		return true;
+	}
+
+	if (_nameConflictSelectionType == NameConflictSelection::ALL) {
+		return false;
+	}
+
+	return false;
 }
 
 std::string SceneItemSelection::ToString(bool resolve) const
@@ -509,7 +526,7 @@ std::string SceneItemSelection::ToString(bool resolve) const
 		if (resolve) {
 			return std::string(obs_module_text(
 				       "AdvSceneSwitcher.sceneItemSelection.type.sourceGroup")) +
-			       " \"" + std::string(_sourceType) + "\"";
+			       " \"" + GetWeakSourceName(_source) + "\"";
 		}
 		return _sourceType;
 	case Type::SOURCE_TYPE:
@@ -558,7 +575,7 @@ static bool populateSceneItemSelectionHelper(obs_scene_t *,
 	return true;
 }
 
-QStringList GetSceneItemsList(SceneSelection &s)
+static QStringList getSceneItemsList(SceneSelection &s)
 {
 	QStringList names;
 	if (s.GetType() != SceneSelection::Type::SCENE) {
@@ -573,7 +590,8 @@ QStringList GetSceneItemsList(SceneSelection &s)
 			return true;
 		};
 
-		obs_enum_scenes(enumScenes, &names);
+		OBSCanvasAutoRelease canvas = OBSGetStrongRef(s.GetCanvas());
+		obs_canvas_enum_scenes(canvas, enumScenes, &names);
 	} else {
 		auto source = obs_weak_source_get_source(s.GetScene(false));
 		auto scene = obs_scene_from_source(source);
@@ -589,14 +607,41 @@ QStringList GetSceneItemsList(SceneSelection &s)
 
 void SceneItemSelectionWidget::PopulateItemSelection()
 {
-	const QStringList sceneItmes = GetSceneItemsList(_scene);
-	AddSelectionGroup(_sources, sceneItmes, false);
+	_sources->clear();
+	const QStringList sceneItems = getSceneItemsList(_scene);
+	AddSelectionGroup(_sources, sceneItems, false);
 	_sources->setCurrentIndex(-1);
 }
 
-static inline void populateMessageTypeSelection(QComboBox *list)
+static inline void populateMessageTypeSelection(
+	QComboBox *list,
+	const std::vector<SceneItemSelection::Type> &allowedTypes)
 {
-	for (const auto &[type, name] : types) {
+	const static std::map<SceneItemSelection::Type, std::string> types = {
+		{SceneItemSelection::Type::SOURCE_NAME,
+		 "AdvSceneSwitcher.sceneItemSelection.type.sourceName"},
+		{SceneItemSelection::Type::VARIABLE_NAME,
+		 "AdvSceneSwitcher.sceneItemSelection.type.sourceVariable"},
+		{SceneItemSelection::Type::SOURCE_NAME_PATTERN,
+		 "AdvSceneSwitcher.sceneItemSelection.type.sourceNamePattern"},
+		{SceneItemSelection::Type::SOURCE_GROUP,
+		 "AdvSceneSwitcher.sceneItemSelection.type.sourceGroup"},
+		{SceneItemSelection::Type::SOURCE_TYPE,
+		 "AdvSceneSwitcher.sceneItemSelection.type.sourceType"},
+		{SceneItemSelection::Type::INDEX,
+		 "AdvSceneSwitcher.sceneItemSelection.type.index"},
+		{SceneItemSelection::Type::INDEX_RANGE,
+		 "AdvSceneSwitcher.sceneItemSelection.type.indexRange"},
+		{SceneItemSelection::Type::ALL,
+		 "AdvSceneSwitcher.sceneItemSelection.type.all"},
+		{SceneItemSelection::Type::ANY,
+		 "AdvSceneSwitcher.sceneItemSelection.type.any"},
+	};
+
+	for (const auto &type : allowedTypes) {
+		const auto it = types.find(type);
+		assert(it != types.end());
+		const auto &[_, name] = *it;
 		list->addItem(obs_module_text(name.c_str()),
 			      static_cast<int>(type));
 	}
@@ -673,9 +718,10 @@ static void populateSourceGroupSelection(QComboBox *list)
 	list->setCurrentIndex(0);
 }
 
-SceneItemSelectionWidget::SceneItemSelectionWidget(QWidget *parent,
-						   bool showAll,
-						   Placeholder type)
+SceneItemSelectionWidget::SceneItemSelectionWidget(
+	QWidget *parent,
+	const std::vector<SceneItemSelection::Type> &selections,
+	NameClashMode mode)
 	: QWidget(parent),
 	  _controlsLayout(new QHBoxLayout),
 	  _sources(new FilterComboBox(
@@ -690,15 +736,25 @@ SceneItemSelectionWidget::SceneItemSelectionWidget(QWidget *parent,
 	  _pattern(new VariableLineEdit(this)),
 	  _regex(new RegexConfigWidget(this, false)),
 	  _changeType(new QPushButton(this)),
-	  _hasPlaceholderEntry(showAll),
-	  _placeholder(type)
+	  _nameClashMode(mode),
+	  _selectionTypes(selections)
 {
+	static bool setupDone = false;
+	if (setupDone) {
+		setupDone = true;
+		qRegisterMetaType<NameClashMode>("NameClashMode");
+		qRegisterMetaType<ConflictIndex>("ConflictIndex");
+	}
+
 	_sources->setSizeAdjustPolicy(QComboBox::AdjustToContents);
 	_sourceGroups->setSizeAdjustPolicy(QComboBox::AdjustToContents);
 	_nameConflictIndex->setSizeAdjustPolicy(QComboBox::AdjustToContents);
 
 	_changeType->setMaximumWidth(22);
-	SetButtonIcon(_changeType, ":/settings/images/settings/general.svg");
+	SetButtonIcon(_changeType,
+		      GetThemeTypeName() == "Light"
+			      ? ":/settings/images/settings/general.svg"
+			      : "theme:Dark/settings/general.svg");
 	_changeType->setFlat(true);
 	_changeType->setToolTip(obs_module_text(
 		"AdvSceneSwitcher.sceneItemSelection.configure"));
@@ -751,13 +807,8 @@ SceneItemSelectionWidget::SceneItemSelectionWidget(QWidget *parent,
 
 void SceneItemSelectionWidget::SetSceneItem(const SceneItemSelection &item)
 {
-	int idx = item._nameConflictSelectionIndex;
-	if (_hasPlaceholderEntry) {
-		idx += 1;
-	}
-	_nameConflictIndex->setCurrentIndex(idx);
-	_sources->setCurrentText(
-		QString::fromStdString(GetWeakSourceName(item._source)));
+	_sources->setCurrentIndex(_sources->findText(
+		QString::fromStdString(GetWeakSourceName(item._source))));
 	_sourceGroups->setCurrentText(
 		QString::fromStdString(GetWeakSourceName(item._source)));
 	_variables->SetVariable(item._variable);
@@ -770,21 +821,25 @@ void SceneItemSelectionWidget::SetSceneItem(const SceneItemSelection &item)
 
 	_currentSelection = item;
 
-	SetNameConflictVisibility();
+	{
+		const QSignalBlocker b(_nameConflictIndex);
+		SetNameConflictVisibility();
+	}
 
-	switch (item._nameConflictSelectionType) {
-	case SceneItemSelection::NameConflictSelection::ALL:
-	case SceneItemSelection::NameConflictSelection::ANY:
-		_placeholder = Placeholder::ALL;
-		_nameConflictIndex->setCurrentIndex(0);
-		break;
-	case SceneItemSelection::NameConflictSelection::INDIVIDUAL:
-		int idx = item._nameConflictSelectionIndex;
-		if (_hasPlaceholderEntry) {
-			idx += 1;
-		}
+	auto type = item._nameConflictSelectionType;
+
+	if (type == NameConflictSelection::INDIVIDUAL) {
+		const int selection = item._nameConflictSelectionIndex;
+		const int idx = _nameConflictIndex->findData(
+			QVariant::fromValue(ConflictIndex(selection)));
 		_nameConflictIndex->setCurrentIndex(idx);
-		break;
+	} else {
+		const auto selection = type == NameConflictSelection::ANY
+					       ? NameClashMode::ANY
+					       : NameClashMode::ALL;
+		const int idx = _nameConflictIndex->findData(
+			QVariant::fromValue(ConflictIndex(selection)));
+		_nameConflictIndex->setCurrentIndex(idx);
 	}
 
 	SetWidgetVisibility();
@@ -792,28 +847,26 @@ void SceneItemSelectionWidget::SetSceneItem(const SceneItemSelection &item)
 
 void SceneItemSelectionWidget::SetScene(const SceneSelection &s)
 {
+
 	_scene = s;
-	_sources->clear();
 	_nameConflictIndex->hide();
-	PopulateItemSelection();
-}
-
-void SceneItemSelectionWidget::ShowPlaceholder(bool value)
-{
-	_hasPlaceholderEntry = value;
-}
-
-void SceneItemSelectionWidget::SetPlaceholderType(Placeholder t,
-						  bool resetSelection)
-{
-	_placeholder = t;
-	if (resetSelection) {
-		_sources->setCurrentIndex(-1);
-	} else {
-		auto count = _nameConflictIndex->count() - 1;
-		const QSignalBlocker b(_nameConflictIndex);
-		SetupNameConflictIdxSelection(count > 0 ? count : 1);
+	if (_currentSelection._type != SceneItemSelection::Type::SOURCE_NAME) {
+		PopulateItemSelection();
+		return;
 	}
+
+	auto previous = _currentSelection;
+	PopulateItemSelection();
+	SetSceneItem(previous);
+}
+
+void SceneItemSelectionWidget::showEvent(QShowEvent *event)
+{
+	QWidget::showEvent(event);
+	const QSignalBlocker b1(_sources);
+	const QSignalBlocker b2(this);
+	PopulateItemSelection();
+	SetSceneItem(_currentSelection);
 }
 
 void SceneItemSelectionWidget::SceneChanged(const SceneSelection &s)
@@ -850,9 +903,8 @@ void SceneItemSelectionWidget::SetNameConflictVisibility()
 	}
 
 	case SceneItemSelection::Type::SOURCE_GROUP:
-		// There cannot be a name conflict with source groups
-		_nameConflictIndex->hide();
-		return;
+		sceneItemCount = _currentSelection.GetSceneItems(_scene).size();
+		break;
 	case SceneItemSelection::Type::SOURCE_NAME_PATTERN:
 	case SceneItemSelection::Type::SOURCE_TYPE:
 		sceneItemCount = GetSceneItemCount(_scene.GetScene(false));
@@ -860,6 +912,7 @@ void SceneItemSelectionWidget::SetNameConflictVisibility()
 	case SceneItemSelection::Type::INDEX:
 	case SceneItemSelection::Type::INDEX_RANGE:
 	case SceneItemSelection::Type::ALL:
+	case SceneItemSelection::Type::ANY:
 		break;
 	}
 
@@ -928,24 +981,30 @@ void SceneItemSelectionWidget::NameConflictIndexChanged(int idx)
 		return;
 	}
 
-	_currentSelection._nameConflictSelectionIndex = idx;
-	if (_hasPlaceholderEntry && idx == 0) {
-		switch (_placeholder) {
-		case SceneItemSelectionWidget::Placeholder::ALL:
-			_currentSelection._nameConflictSelectionType =
-				SceneItemSelection::NameConflictSelection::ALL;
-			break;
-		case SceneItemSelectionWidget::Placeholder::ANY:
-			_currentSelection._nameConflictSelectionType =
-				SceneItemSelection::NameConflictSelection::ANY;
-			break;
+	QVariant data = _nameConflictIndex->currentData(Qt::UserRole);
+	if (!data.canConvert<ConflictIndex>()) {
+		return;
+	}
+
+	const auto setSelection = [this](int val, NameConflictSelection type) {
+		_currentSelection._nameConflictSelectionIndex = val;
+		_currentSelection._nameConflictSelectionType = type;
+	};
+
+	const auto visit = [this, &setSelection](auto &&val) {
+		using T = std::decay_t<decltype(val)>;
+		if constexpr (std::is_same_v<T, int>) {
+			setSelection(val, NameConflictSelection::INDIVIDUAL);
+		} else if constexpr (std::is_same_v<T, NameClashMode>) {
+			setSelection(0, val == NameClashMode::ANY
+						? NameConflictSelection::ANY
+						: NameConflictSelection::ALL);
 		}
-	}
-	if (_hasPlaceholderEntry && idx > 0) {
-		_currentSelection._nameConflictSelectionIndex -= 1;
-		_currentSelection._nameConflictSelectionType =
-			SceneItemSelection::NameConflictSelection::INDIVIDUAL;
-	}
+	};
+
+	const auto variant = data.value<ConflictIndex>();
+	std::visit(visit, variant);
+
 	emit SceneItemChanged(_currentSelection);
 }
 
@@ -976,7 +1035,7 @@ void SceneItemSelectionWidget::SourceTypeChanged(const QString &text)
 void SceneItemSelectionWidget::ChangeType()
 {
 	bool accepted = SceneItemTypeSelection::AskForSettings(
-		this, _currentSelection._type);
+		this, _currentSelection._type, _selectionTypes);
 	if (!accepted) {
 		return;
 	}
@@ -989,18 +1048,42 @@ void SceneItemSelectionWidget::ChangeType()
 void SceneItemSelectionWidget::SetupNameConflictIdxSelection(int sceneItemCount)
 {
 	_nameConflictIndex->clear();
-	if (_hasPlaceholderEntry) {
-		if (_placeholder == Placeholder::ALL) {
-			_nameConflictIndex->addItem(obs_module_text(
-				"AdvSceneSwitcher.sceneItemSelection.all"));
-		} else {
-			_nameConflictIndex->addItem(obs_module_text(
-				"AdvSceneSwitcher.sceneItemSelection.any"));
-		}
+
+	switch (_nameClashMode) {
+	case NameClashMode::NONE:
+		break;
+	case NameClashMode::ALL:
+		_nameConflictIndex->addItem(
+			obs_module_text(
+				"AdvSceneSwitcher.sceneItemSelection.all"),
+			QVariant::fromValue(ConflictIndex(NameClashMode::ALL)));
+		break;
+	case NameClashMode::ANY:
+		_nameConflictIndex->addItem(
+			obs_module_text(
+				"AdvSceneSwitcher.sceneItemSelection.any"),
+			QVariant::fromValue(ConflictIndex(NameClashMode::ANY)));
+		break;
+	case NameClashMode::ANY_AND_ALL:
+		_nameConflictIndex->addItem(
+			obs_module_text(
+				"AdvSceneSwitcher.sceneItemSelection.any"),
+			QVariant::fromValue(ConflictIndex(NameClashMode::ANY)));
+		_nameConflictIndex->addItem(
+			obs_module_text(
+				"AdvSceneSwitcher.sceneItemSelection.all"),
+			QVariant::fromValue(ConflictIndex(NameClashMode::ALL)));
+		break;
+	default:
+		break;
 	}
+
 	for (int i = 1; i <= sceneItemCount; ++i) {
-		_nameConflictIndex->addItem(QString::number(i) + ".");
-	}
+		_nameConflictIndex->addItem(
+			QString::number(i) + ".",
+			QVariant::fromValue(ConflictIndex(i - 1)));
+	};
+
 	adjustSize();
 	updateGeometry();
 }
@@ -1038,49 +1121,55 @@ void SceneItemSelectionWidget::SetWidgetVisibility()
 	case SceneItemSelection::Type::SOURCE_NAME:
 		PlaceWidgets(
 			obs_module_text(
-				"AdvSceneSwitcher.sceneItemSelection.type.sourceName.entry"),
+				"AdvSceneSwitcher.sceneItemSelection.type.sourceName.layout"),
 			_controlsLayout, widgetMap, false);
 		break;
 	case SceneItemSelection::Type::VARIABLE_NAME:
 		PlaceWidgets(
 			obs_module_text(
-				"AdvSceneSwitcher.sceneItemSelection.type.sourceVariable.entry"),
+				"AdvSceneSwitcher.sceneItemSelection.type.sourceVariable.layout"),
 			_controlsLayout, widgetMap, false);
 		break;
 	case SceneItemSelection::Type::SOURCE_NAME_PATTERN:
 		PlaceWidgets(
 			obs_module_text(
-				"AdvSceneSwitcher.sceneItemSelection.type.sourceNamePattern.entry"),
+				"AdvSceneSwitcher.sceneItemSelection.type.sourceNamePattern.layout"),
 			_controlsLayout, widgetMap, false);
 		break;
 	case SceneItemSelection::Type::SOURCE_GROUP:
 		PlaceWidgets(
 			obs_module_text(
-				"AdvSceneSwitcher.sceneItemSelection.type.sourceGroup.entry"),
+				"AdvSceneSwitcher.sceneItemSelection.type.sourceGroup.layout"),
 			_controlsLayout, widgetMap, false);
 		break;
 	case SceneItemSelection::Type::SOURCE_TYPE:
 		PlaceWidgets(
 			obs_module_text(
-				"AdvSceneSwitcher.sceneItemSelection.type.sourceType.entry"),
+				"AdvSceneSwitcher.sceneItemSelection.type.sourceType.layout"),
 			_controlsLayout, widgetMap, false);
 		break;
 	case SceneItemSelection::Type::INDEX:
 		PlaceWidgets(
 			obs_module_text(
-				"AdvSceneSwitcher.sceneItemSelection.type.index.entry"),
+				"AdvSceneSwitcher.sceneItemSelection.type.index.layout"),
 			_controlsLayout, widgetMap, false);
 		break;
 	case SceneItemSelection::Type::INDEX_RANGE:
 		PlaceWidgets(
 			obs_module_text(
-				"AdvSceneSwitcher.sceneItemSelection.type.indexRange.entry"),
+				"AdvSceneSwitcher.sceneItemSelection.type.indexRange.layout"),
 			_controlsLayout, widgetMap, false);
 		break;
 	case SceneItemSelection::Type::ALL:
 		PlaceWidgets(
 			obs_module_text(
-				"AdvSceneSwitcher.sceneItemSelection.type.all.entry"),
+				"AdvSceneSwitcher.sceneItemSelection.type.all.layout"),
+			_controlsLayout, widgetMap, false);
+		break;
+	case SceneItemSelection::Type::ANY:
+		PlaceWidgets(
+			obs_module_text(
+				"AdvSceneSwitcher.sceneItemSelection.type.any.layout"),
 			_controlsLayout, widgetMap, false);
 		break;
 	default:
@@ -1126,6 +1215,10 @@ void SceneItemSelectionWidget::SetWidgetVisibility()
 	_indexEnd->setVisible(_currentSelection._type ==
 			      SceneItemSelection::Type::INDEX_RANGE);
 
+	if (_nameClashMode == NameClashMode::HIDE) {
+		_nameConflictIndex->hide();
+	}
+
 	adjustSize();
 	updateGeometry();
 }
@@ -1141,7 +1234,6 @@ SceneItemTypeSelection::SceneItemTypeSelection(
 	setWindowModality(Qt::WindowModality::WindowModal);
 	setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
 
-	populateMessageTypeSelection(_typeSelection);
 	_typeSelection->setCurrentIndex(
 		_typeSelection->findData(static_cast<int>(type)));
 
@@ -1155,10 +1247,13 @@ SceneItemTypeSelection::SceneItemTypeSelection(
 	setLayout(layout);
 }
 
-bool SceneItemTypeSelection::AskForSettings(QWidget *parent,
-					    SceneItemSelection::Type &type)
+bool SceneItemTypeSelection::AskForSettings(
+	QWidget *parent, SceneItemSelection::Type &type,
+	const std::vector<SceneItemSelection::Type> &allowedTypes)
 {
 	SceneItemTypeSelection dialog(parent, type);
+	dialog._typeSelection->clear();
+	populateMessageTypeSelection(dialog._typeSelection, allowedTypes);
 	dialog.setWindowTitle(obs_module_text("AdvSceneSwitcher.windowTitle"));
 	if (dialog.exec() != DialogCode::Accepted) {
 		return false;

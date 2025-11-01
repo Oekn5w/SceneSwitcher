@@ -1,5 +1,6 @@
 #include "macro-tree.hpp"
 #include "macro.hpp"
+#include "macro-signals.hpp"
 #include "path-helpers.hpp"
 #include "sync-helpers.hpp"
 #include "ui-helpers.hpp"
@@ -79,10 +80,10 @@ MacroTreeItem::MacroTreeItem(MacroTree *tree, std::shared_ptr<Macro> macroItem,
 		_macro->SetPaused(!val);
 	};
 	connect(_running, &QAbstractButton::clicked, setRunning);
-	connect(_tree->window(), SIGNAL(HighlightMacrosChanged(bool)), this,
-		SLOT(EnableHighlight(bool)));
-	connect(_tree->window(),
-		SIGNAL(MacroRenamed(const QString &, const QString &)), this,
+	connect(MacroSignalManager::Instance(), SIGNAL(HighlightChanged(bool)),
+		this, SLOT(EnableHighlight(bool)));
+	connect(MacroSignalManager::Instance(),
+		SIGNAL(Rename(const QString &, const QString &)), this,
 		SLOT(MacroRenamed(const QString &, const QString &)));
 	connect(&_timer, SIGNAL(timeout()), this, SLOT(HighlightIfExecuted()));
 	connect(&_timer, SIGNAL(timeout()), this, SLOT(UpdatePaused()));
@@ -412,6 +413,20 @@ void MacroTreeModel::Add(std::shared_ptr<Macro> item)
 	_mt->selectionModel()->clear();
 	_mt->selectionModel()->select(createIndex(idx, 0, nullptr),
 				      QItemSelectionModel::Select);
+}
+
+void MacroTreeModel::MoveToBeginningOfGroup(std::shared_ptr<Macro> item,
+					    std::shared_ptr<Macro> group)
+{
+	auto it = std::find(_macros.begin(), _macros.end(), item);
+	assert(it != _macros.end());
+	std::shared_ptr<Macro> tmp = *it;
+	_macros.erase(it);
+	it = std::find(_macros.begin(), _macros.end(), group);
+	assert(it != _macros.end());
+	_macros.insert(std::next(it), tmp);
+
+	Reset(_macros);
 }
 
 void MacroTreeModel::Remove(std::shared_ptr<Macro> item)
@@ -789,6 +804,13 @@ void MacroTree::Add(std::shared_ptr<Macro> item,
 	assert(GetModel()->IsInValidState());
 }
 
+void MacroTree::AddToGroup(std::shared_ptr<Macro> item,
+			   std::shared_ptr<Macro> group) const
+{
+	GetModel()->Add(item);
+	GetModel()->MoveToBeginningOfGroup(item, group);
+}
+
 std::shared_ptr<Macro> MacroTree::GetCurrentMacro() const
 {
 	return GetModel()->GetCurrentMacro();
@@ -889,14 +911,7 @@ void MacroTree::dropEvent(QDropEvent *event)
 	QModelIndexList indices = selectedIndexes();
 
 	DropIndicatorPosition indicator = dropIndicatorPosition();
-	int row = indexAt(
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-			  event->position().toPoint()
-#else
-			  event->pos()
-#endif
-				  )
-			  .row();
+	int row = indexAt(event->position().toPoint()).row();
 	bool emptyDrop = row == -1;
 
 	if (emptyDrop) {
@@ -1167,6 +1182,28 @@ bool MacroTree::SelectionEmpty() const
 	return selectedIndexes().empty();
 }
 
+bool MacroTree::GroupsExist() const
+{
+	for (const auto &macro : GetMacros()) {
+		if (macro->IsGroup()) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void MacroTree::ExpandGroup(std::shared_ptr<Macro> item) const
+{
+	auto *mtm = GetModel();
+	mtm->ExpandGroup(item);
+}
+
+void MacroTree::CollapseGroup(std::shared_ptr<Macro> item) const
+{
+	auto *mtm = GetModel();
+	mtm->CollapseGroup(item);
+}
+
 void MacroTree::MoveItemBefore(const std::shared_ptr<Macro> &item,
 			       const std::shared_ptr<Macro> &after) const
 {
@@ -1267,6 +1304,26 @@ void MacroTree::UngroupSelectedGroups()
 	assert(GetModel()->IsInValidState());
 }
 
+void MacroTree::ExpandAll()
+{
+	for (const auto &macro : GetMacros()) {
+		if (!macro->IsGroup()) {
+			continue;
+		}
+		ExpandGroup(macro);
+	}
+}
+
+void MacroTree::CollapseAll()
+{
+	for (const auto &macro : GetMacros()) {
+		if (!macro->IsGroup()) {
+			continue;
+		}
+		CollapseGroup(macro);
+	}
+}
+
 void MacroTree::SelectionChangedHelper(const QItemSelection &,
 				       const QItemSelection &)
 {
@@ -1308,10 +1365,10 @@ QSize MacroTreeDelegate::sizeHint(const QStyleOptionViewItem &option,
 	QWidget *item = tree->indexWidget(index);
 
 	if (!item) {
-		return (QSize(0, 0));
+		return QStyledItemDelegate::sizeHint(option, index);
 	}
 
-	return (QSize(option.widget->minimumWidth(), item->height()));
+	return QSize(item->sizeHint());
 }
 
 } // namespace advss

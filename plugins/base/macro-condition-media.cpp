@@ -185,6 +185,12 @@ void MacroConditionMedia::SetupTempVars()
 	MacroCondition::SetupTempVars();
 
 	if (_sourceType != SourceType::SOURCE) {
+		AddTempvar(
+			"source",
+			obs_module_text(
+				"AdvSceneSwitcher.tempVar.media.source"),
+			obs_module_text(
+				"AdvSceneSwitcher.tempVar.media.source.description"));
 		return;
 	}
 
@@ -256,7 +262,7 @@ void MacroConditionMedia::SetTempVarValues(
 		const auto state = std::get<obs_media_state>(value);
 		SetTempVarValue("state", std::to_string(state));
 	} else {
-		const auto timeInfo = std::get<MediaTimeInfo>(value);
+		const auto &timeInfo = std::get<MediaTimeInfo>(value);
 		SetTempVarValue("time", std::to_string(timeInfo.time));
 		SetTempVarValue("duration", std::to_string(timeInfo.duration));
 	}
@@ -351,13 +357,23 @@ bool MacroConditionMedia::CheckCondition()
 	switch (_sourceType) {
 	case SourceType::ANY:
 		for (auto &source : _sourceGroup) {
-			match = match || source.CheckCondition();
+			const bool matched = source.CheckCondition();
+			if (matched) {
+				SetTempVarValue("source",
+						source.GetSource().ToString());
+			}
+			match = match || matched;
 		}
 		break;
 	case SourceType::ALL: {
 		bool res = true;
 		for (auto &source : _sourceGroup) {
-			res = res && source.CheckCondition();
+			const bool matched = source.CheckCondition();
+			if (matched) {
+				SetTempVarValue("source",
+						source.GetSource().ToString());
+			}
+			res = res && matched;
 		}
 		match = res;
 		break;
@@ -610,24 +626,26 @@ static void populateCheckTypes(QComboBox *list)
 		static_cast<int>(MacroConditionMedia::CheckType::TIME));
 }
 
+static QStringList getMediaSourcesList()
+{
+	auto sources = GetMediaSourceNames();
+	sources.sort();
+	return sources;
+}
+
 MacroConditionMediaEdit::MacroConditionMediaEdit(
 	QWidget *parent, std::shared_ptr<MacroConditionMedia> entryData)
 	: QWidget(parent),
 	  _sourceTypes(new QComboBox()),
 	  _checkTypes(new QComboBox()),
-	  _scenes(new SceneSelectionWidget(window(), true, true, true, true,
-					   true)),
-	  _sources(new SourceSelectionWidget(this, QStringList(), true)),
+	  _scenes(new SceneSelectionWidget(this, true, true, true, true, true)),
+	  _sources(new SourceSelectionWidget(this, getMediaSourcesList, true)),
 	  _states(new QComboBox()),
 	  _timeRestrictions(new QComboBox()),
 	  _time(new DurationSelection())
 {
 	_states->setToolTip(obs_module_text(
 		"AdvSceneSwitcher.condition.media.inconsistencyInfo"));
-
-	auto sources = GetMediaSourceNames();
-	sources.sort();
-	_sources->SetSourceNameList(sources);
 
 	QWidget::connect(_sourceTypes, SIGNAL(currentIndexChanged(int)), this,
 			 SLOT(SourceTypeChanged(int)));
@@ -758,11 +776,7 @@ void MacroConditionMediaEdit::TimeRestrictionChanged(int index)
 
 void MacroConditionMediaEdit::TimeChanged(const Duration &dur)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_time = dur;
 	if (_entryData->GetSourceType() !=
 	    MacroConditionMedia::SourceType::SOURCE) {

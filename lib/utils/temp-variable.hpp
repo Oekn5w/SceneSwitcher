@@ -13,6 +13,7 @@
 namespace advss {
 
 class Macro;
+class MacroEdit;
 class MacroSegment;
 class TempVariableRef;
 class TempVariableSelection;
@@ -60,7 +61,8 @@ private:
 
 class TempVariableRef {
 public:
-	EXPORT void Save(obs_data_t *, const char *name = "tempVar") const;
+	EXPORT void Save(obs_data_t *, Macro *,
+			 const char *name = "tempVar") const;
 	EXPORT void Load(obs_data_t *, Macro *, const char *name = "tempVar");
 	EXPORT std::optional<const TempVariable> GetTempVariable(Macro *) const;
 	EXPORT bool operator==(const TempVariableRef &other) const;
@@ -70,10 +72,12 @@ private:
 	enum class SegmentType { NONE, CONDITION, ACTION, ELSEACTION };
 	SegmentType GetType() const;
 	int GetIdx() const;
-	void PostLoad(int idx, SegmentType, Macro *);
+	void PostLoad(int idx, SegmentType, const std::weak_ptr<Macro> &);
 
 	std::string _id = "";
-	std::weak_ptr<MacroSegment> _segment;
+	std::weak_ptr<MacroSegment> _segment = {};
+	int _depth = 0;
+
 	friend TempVariable;
 	friend TempVariableSelection;
 };
@@ -88,7 +92,7 @@ public:
 private slots:
 	void SelectionIdxChanged(int);
 	void MacroSegmentsChanged();
-	void SegmentTempVarsChanged();
+	void SegmentTempVarsChanged(MacroSegment *);
 	void HighlightChanged(int);
 
 signals:
@@ -101,9 +105,22 @@ private:
 	MacroSegment *GetSegment() const;
 
 	FilterComboBox *_selection;
-	AutoUpdateTooltipLabel *_info;
+	AutoUpdateHelpIcon *_info;
+	std::vector<MacroEdit *> _macroEdits;
 };
 
-void NotifyUIAboutTempVarChange();
+class TempVarSignalManager : public QObject {
+	Q_OBJECT
+public:
+	static TempVarSignalManager *Instance();
+
+signals:
+	void SegmentTempVarsChanged(MacroSegment *);
+
+private:
+	TempVarSignalManager();
+};
+
+void NotifyUIAboutTempVarChange(MacroSegment *);
 
 } // namespace advss

@@ -332,7 +332,8 @@ WSConnectionSettingsDialog::WSConnectionSettingsDialog(
 	: ItemSettingsDialog(settings, connections,
 			     "AdvSceneSwitcher.connection.select",
 			     "AdvSceneSwitcher.connection.add",
-			     "AdvSceneSwitcher.item.nameNotAvailable", parent),
+			     "AdvSceneSwitcher.item.nameNotAvailable", true,
+			     parent),
 	  _useCustomURI(new QCheckBox()),
 	  _customUri(new QLineEdit()),
 	  _address(new QLineEdit()),
@@ -436,10 +437,11 @@ WSConnectionSettingsDialog::WSConnectionSettingsDialog(
 		row, 0);
 	_layout->addWidget(_reconnectDelay, row, 1);
 	++row;
-	_layout->addWidget(
-		new QLabel(obs_module_text(
-			"AdvSceneSwitcher.connection.useOBSWebsocketProtocol")),
-		row, 0);
+	auto label = new QLabel(obs_module_text(
+		"AdvSceneSwitcher.connection.useOBSWebsocketProtocol"));
+	label->setTextInteractionFlags(Qt::TextBrowserInteraction);
+	label->setOpenExternalLinks(true);
+	_layout->addWidget(label, row, 0);
 	_layout->addWidget(_useOBSWSProtocol, row, 1);
 	++row;
 	_layout->addWidget(_test, row, 0);
@@ -502,7 +504,9 @@ void WSConnectionSettingsDialog::SetStatus()
 
 void WSConnectionSettingsDialog::ShowPassword()
 {
-	SetButtonIcon(_showPassword, ":res/images/visible.svg");
+	SetButtonIcon(_showPassword, GetThemeTypeName() == "Light"
+					     ? ":res/images/visible.svg"
+					     : "theme:Dark/visible.svg");
 	_password->setEchoMode(QLineEdit::Normal);
 }
 

@@ -236,28 +236,22 @@ void MacroActionStreamEdit::UpdateEntryData()
 void MacroActionStreamEdit::KeyFrameIntervalChanged(
 	const NumberVariable<int> &value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_keyFrameInterval = value;
 }
 
 void MacroActionStreamEdit::StringValueChanged()
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_stringValue = _stringValue->text().toStdString();
 	SetWidgetVisibility();
 }
 
 void MacroActionStreamEdit::ShowPassword()
 {
-	SetButtonIcon(_showPassword, ":res/images/visible.svg");
+	SetButtonIcon(_showPassword, GetThemeTypeName() == "Light"
+					     ? ":res/images/visible.svg"
+					     : "theme:Dark/visible.svg");
 	_stringValue->setEchoMode(QLineEdit::Normal);
 }
 
@@ -301,11 +295,8 @@ void MacroActionStreamEdit::SetWidgetVisibility()
 
 void MacroActionStreamEdit::ActionChanged(int value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
 	{
-		auto lock = LockContext();
+		GUARD_LOADING_AND_LOCK();
 		_entryData->_action =
 			static_cast<MacroActionStream::Action>(value);
 	}

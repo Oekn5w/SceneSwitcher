@@ -1,8 +1,8 @@
 #include "macro.hpp"
 #include "macro-action-factory.hpp"
 #include "macro-condition-factory.hpp"
-#include "macro-dock.hpp"
 #include "macro-helpers.hpp"
+#include "macro-settings.hpp"
 #include "plugin-state-helpers.hpp"
 #include "splitter-helpers.hpp"
 #include "sync-helpers.hpp"
@@ -14,77 +14,26 @@
 #include <QAction>
 #include <QMainWindow>
 #include <unordered_map>
-#include <util/platform.h>
-
-#if LIBOBS_API_VER < MAKE_SEMANTIC_VERSION(30, 0, 0)
-#include <QDockWidget>
-
-namespace {
-
-struct DockMapEntry {
-	QAction *action = nullptr;
-	QWidget *dock = nullptr;
-};
-
-} // namespace
-
-static std::unordered_map<const char *, DockMapEntry> dockIds;
-static std::mutex dockMutex;
-
-static bool obs_frontend_add_dock_by_id(const char *id, const char *title,
-					QWidget *widget)
-{
-	std::lock_guard<std::mutex> lock(dockMutex);
-	if (dockIds.count(id) > 0) {
-		return false;
-	}
-
-	widget->setObjectName(id);
-
-	auto dock = new QDockWidget();
-	dock->setWindowTitle(title);
-	dock->setWidget(widget);
-	dock->setFloating(true);
-	dock->setVisible(false);
-	dock->setFeatures(QDockWidget::DockWidgetClosable |
-			  QDockWidget::DockWidgetMovable |
-			  QDockWidget::DockWidgetFloatable);
-
-	auto action = static_cast<QAction *>(obs_frontend_add_dock(dock));
-	if (!action) {
-		return false;
-	}
-	dockIds[id] = {action, dock};
-	return true;
-}
-
-static void obs_frontend_remove_dock(const char *id)
-{
-	std::lock_guard<std::mutex> lock(dockMutex);
-	auto it = dockIds.find(id);
-	if (it == dockIds.end()) {
-		return;
-	}
-	it->second.action->deleteLater();
-	it->second.dock->deleteLater();
-	dockIds.erase(it);
-}
-
-#endif
 
 namespace advss {
 
 static std::deque<std::shared_ptr<Macro>> macros;
 
-Macro::Macro(const std::string &name, const bool addHotkey,
-	     const bool shortCircuitEvaluation)
+Macro::Macro(const std::string &name) : _dockSettings(this)
 {
 	SetName(name);
-	if (addHotkey) {
+}
+
+Macro::Macro(const std::string &name, const GlobalMacroSettings &settings)
+	: Macro(name)
+{
+	if (settings._newMacroRegisterHotkeys) {
 		SetupHotkeys();
 	}
-	_registerHotkeys = addHotkey;
-	_useShortCircuitEvaluation = shortCircuitEvaluation;
+	_registerHotkeys = settings._newMacroRegisterHotkeys;
+	_checkInParallel = settings._newMacroCheckInParallel;
+	_useShortCircuitEvaluation =
+		settings._newMacroUseShortCircuitEvaluation;
 }
 
 Macro::~Macro()
@@ -92,19 +41,14 @@ Macro::~Macro()
 	_die = true;
 	Stop();
 	ClearHotkeys();
-
-	// Keep the dock widgets in case of shutdown so they can be restored by
-	// OBS on startup
-	if (!OBSIsShuttingDown()) {
-		RemoveDock();
-	}
 }
 
 std::shared_ptr<Macro>
 Macro::CreateGroup(const std::string &name,
 		   std::vector<std::shared_ptr<Macro>> &children)
 {
-	auto group = std::make_shared<Macro>(name, false);
+	auto group = std::make_shared<Macro>(name);
+	group->_registerHotkeys = false;
 	for (auto &c : children) {
 		c->SetParent(group);
 	}
@@ -165,7 +109,10 @@ static bool checkCondition(const std::shared_ptr<MacroCondition> &condition)
 	static constexpr auto perfLogThreshold = 300ms;
 
 	const auto startTime = std::chrono::high_resolution_clock::now();
-	const bool conditionMatched = condition->CheckCondition();
+	bool conditionMatched = false;
+	condition->WithLock([&condition, &conditionMatched]() {
+		conditionMatched = condition->CheckCondition();
+	});
 	const auto endTime = std::chrono::high_resolution_clock::now();
 	const auto timeSpent = endTime - startTime;
 
@@ -244,14 +191,52 @@ bool Macro::CheckConditions(bool ignorePause)
 		return false;
 	}
 
-	_matched = false;
-	for (auto &condition : _conditions) {
-		if (_paused && !ignorePause) {
-			vblog(LOG_INFO, "Macro %s is paused", _name.c_str());
+	const auto checkConditionsTask =
+		[this,
+		 ignorePause](const std::deque<std::shared_ptr<MacroCondition>>
+				      &conditions) {
+			for (auto &condition : conditions) {
+				if (!condition) {
+					continue;
+				}
+
+				if (_paused && !ignorePause) {
+					vblog(LOG_INFO, "Macro %s is paused",
+					      _name.c_str());
+					return false;
+				}
+
+				_matched = CheckConditionHelper(condition);
+			}
+			return _matched;
+		};
+
+	if (CheckInParallel()) {
+		if (!_conditionCheckFuture.valid()) {
+			_stop = false;
+			_matched = false;
+			_conditionCheckFuture = std::async(
+				std::launch::async,
+				[this, checkConditionsTask]() {
+					// Copy to avoid settings modifications
+					// causing issues
+					const auto conditionsCopy = _conditions;
+					checkConditionsTask(conditionsCopy);
+				});
 			return false;
 		}
-
-		_matched = CheckConditionHelper(condition);
+		if (_conditionCheckFuture.wait_for(std::chrono::seconds(0)) !=
+		    std::future_status::ready) {
+			vblog(LOG_INFO,
+			      "Macro %s still waiting for condition check result",
+			      _name.c_str());
+			return false;
+		}
+		_conditionCheckFuture.get();
+	} else {
+		_stop = false;
+		_matched = false;
+		_matched = checkConditionsTask(_conditions);
 	}
 
 	vblog(LOG_INFO, "Macro %s returned %d", _name.c_str(), _matched);
@@ -268,7 +253,9 @@ bool Macro::CheckConditions(bool ignorePause)
 
 bool Macro::PerformActions(bool match, bool forceParallel, bool ignorePause)
 {
-	if (!_done) {
+	if (_actionRunFuture.valid() &&
+	    _actionRunFuture.wait_for(std::chrono::seconds(0)) !=
+		    std::future_status::ready) {
 		vblog(LOG_INFO, "Macro %s already running", _name.c_str());
 
 		if (!_stopActionsIfNotDone) {
@@ -286,14 +273,15 @@ bool Macro::PerformActions(bool match, bool forceParallel, bool ignorePause)
 		      : std::bind(&Macro::RunElseActions, this,
 				  std::placeholders::_1);
 	_stop = false;
-	_done = false;
 	bool ret = true;
 	if (_runInParallel || forceParallel) {
-		if (_backgroundThread.joinable()) {
-			_backgroundThread.join();
+		if (_actionRunFuture.valid()) {
+			_actionRunFuture.get();
 		}
-		_backgroundThread = std::thread(
-			[this, runFunc, ignorePause] { runFunc(ignorePause); });
+		_actionRunFuture = std::async(std::launch::async,
+					      [this, runFunc, ignorePause] {
+						      runFunc(ignorePause);
+					      });
 	} else {
 		ret = runFunc(ignorePause);
 	}
@@ -331,6 +319,13 @@ bool Macro::ConditionsShouldBeChecked() const
 
 bool Macro::ShouldRunActions() const
 {
+	if (CheckInParallel() && _conditionCheckFuture.valid()) {
+		vblog(LOG_INFO,
+		      "%s not ready to perform actions as condition check is still running",
+		      _name.c_str());
+		return false;
+	}
+
 	const bool hasActionsToExecute =
 		!_paused && (_matched || _elseActions.size() > 0) &&
 		(!_performActionsOnChange || _conditionSateChanged);
@@ -353,15 +348,9 @@ bool Macro::ShouldRunActions() const
 
 void Macro::SetName(const std::string &name)
 {
-	const bool nameChanged = _name == name;
 	_name = name;
-
 	SetHotkeysDesc();
-
-	if (nameChanged) {
-		_dockId = GenerateDockId();
-	}
-	EnableDock(_registerDock);
+	_dockSettings.HandleMacroNameChange();
 }
 
 void Macro::ResetTimers()
@@ -383,11 +372,17 @@ bool Macro::RunActionsHelper(
 
 	bool actionsExecutedSuccessfully = true;
 	for (auto &action : actions) {
+		if (!action) {
+			continue;
+		}
 		if (action->Enabled()) {
 			action->LogAction();
+			bool actionResult = false;
+			action->WithLock([&action, &actionResult]() {
+				actionResult = action->PerformAction();
+			});
 			actionsExecutedSuccessfully =
-				actionsExecutedSuccessfully &&
-				action->PerformAction();
+				actionsExecutedSuccessfully && actionResult;
 		} else {
 			vblog(LOG_INFO, "skipping disabled action %s",
 			      action->GetId().c_str());
@@ -400,7 +395,6 @@ bool Macro::RunActionsHelper(
 			action->EnableHighlight();
 		}
 	}
-	_done = true;
 	return actionsExecutedSuccessfully;
 }
 
@@ -500,9 +494,35 @@ void Macro::Stop()
 			t.join();
 		}
 	}
-	if (_backgroundThread.joinable()) {
-		_backgroundThread.join();
+	if (_actionRunFuture.valid()) {
+		_actionRunFuture.get();
 	}
+	if (_conditionCheckFuture.valid()) {
+		_conditionCheckFuture.get();
+	}
+}
+
+void Macro::SetCheckInParallel(bool parallel)
+{
+	_checkInParallel = parallel;
+	_conditionCheckFuture = {};
+}
+
+bool Macro::ParallelTasksCompleted() const
+{
+	// A parallel action run might be triggered by RunInParallel() or the
+	// "Run Macro" button, so checking just for RunInParallel() will not
+	// suffice
+	if (!CheckInParallel() && !_actionRunFuture.valid()) {
+		return true;
+	}
+	if (_actionRunFuture.valid()) {
+		return false;
+	}
+	if (CheckInParallel() && _conditionCheckFuture.valid()) {
+		return false;
+	}
+	return true;
 }
 
 MacroInputVariables Macro::GetInputVariables() const
@@ -515,7 +535,7 @@ void Macro::SetInputVariables(const MacroInputVariables &inputVariables)
 	_inputVariables = inputVariables;
 }
 
-std::vector<TempVariable> Macro::GetTempVars(MacroSegment *filter) const
+std::vector<TempVariable> Macro::GetTempVars(const MacroSegment *filter) const
 {
 	std::vector<TempVariable> res;
 
@@ -543,7 +563,7 @@ std::vector<TempVariable> Macro::GetTempVars(MacroSegment *filter) const
 					    return ptr.get() == segment;
 				    }) != _conditions.end();
 	};
-	auto isAction = [this](MacroSegment *segment) -> bool {
+	auto isAction = [this](const MacroSegment *segment) -> bool {
 		return std::find_if(_actions.begin(), _actions.end(),
 				    [segment](
 					    const std::shared_ptr<MacroSegment>
@@ -551,7 +571,7 @@ std::vector<TempVariable> Macro::GetTempVars(MacroSegment *filter) const
 					    return ptr.get() == segment;
 				    }) != _actions.end();
 	};
-	auto isElseAction = [this](MacroSegment *segment) -> bool {
+	auto isElseAction = [this](const MacroSegment *segment) -> bool {
 		return std::find_if(_elseActions.begin(), _elseActions.end(),
 				    [segment](
 					    const std::shared_ptr<MacroSegment>
@@ -640,12 +660,27 @@ std::deque<std::shared_ptr<MacroCondition>> &Macro::Conditions()
 	return _conditions;
 }
 
+const std::deque<std::shared_ptr<MacroCondition>> &Macro::Conditions() const
+{
+	return _conditions;
+}
+
 std::deque<std::shared_ptr<MacroAction>> &Macro::Actions()
 {
 	return _actions;
 }
 
+const std::deque<std::shared_ptr<MacroAction>> &Macro::Actions() const
+{
+	return _actions;
+}
+
 std::deque<std::shared_ptr<MacroAction>> &Macro::ElseActions()
+{
+	return _elseActions;
+}
+
+const std::deque<std::shared_ptr<MacroAction>> &Macro::ElseActions() const
 {
 	return _elseActions;
 }
@@ -704,6 +739,7 @@ bool Macro::Save(obs_data_t *obj, bool saveForCopy) const
 			 static_cast<int>(_pauseSaveBehavior));
 	obs_data_set_bool(obj, "pause", _paused);
 	obs_data_set_bool(obj, "parallel", _runInParallel);
+	obs_data_set_bool(obj, "checkConditionsInParallel", _checkInParallel);
 	obs_data_set_bool(obj, "onChange", _performActionsOnChange);
 	obs_data_set_bool(obj, "skipExecOnStart", _skipExecOnStart);
 	obs_data_set_bool(obj, "stopActionsIfNotDone", _stopActionsIfNotDone);
@@ -713,7 +749,7 @@ bool Macro::Save(obs_data_t *obj, bool saveForCopy) const
 			  _useCustomConditionCheckInterval);
 	_customConditionCheckInterval.Save(obj, "customConditionCheckInterval");
 
-	SaveDockSettings(obj, saveForCopy);
+	_dockSettings.Save(obj, saveForCopy);
 
 	SaveSplitterPos(_actionConditionSplitterPosition, obj,
 			"macroActionConditionSplitterPosition");
@@ -789,6 +825,7 @@ bool Macro::Load(obs_data_t *obj)
 		break;
 	}
 	_runInParallel = obs_data_get_bool(obj, "parallel");
+	_checkInParallel = obs_data_get_bool(obj, "checkConditionsInParallel");
 	_performActionsOnChange = obs_data_get_bool(obj, "onChange");
 	_skipExecOnStart = obs_data_get_bool(obj, "skipExecOnStart");
 	_stopActionsIfNotDone = obs_data_get_bool(obj, "stopActionsIfNotDone");
@@ -798,7 +835,7 @@ bool Macro::Load(obs_data_t *obj)
 		obs_data_get_bool(obj, "useCustomConditionCheckInterval");
 	_customConditionCheckInterval.Load(obj, "customConditionCheckInterval");
 
-	LoadDockSettings(obj);
+	_dockSettings.Load(obj);
 
 	LoadSplitterPos(_actionConditionSplitterPosition, obj,
 			"macroActionConditionSplitterPosition");
@@ -832,9 +869,12 @@ bool Macro::Load(obs_data_t *obj)
 		auto newEntry = MacroConditionFactory::Create(id, this);
 		if (newEntry) {
 			_conditions.emplace_back(newEntry);
-			auto c = _conditions.back().get();
-			c->Load(arrayObj);
-			c->ValidateLogicSelection(root, Name().c_str());
+			auto condition = _conditions.back().get();
+			condition->WithLock([&]() {
+				condition->Load(arrayObj);
+				condition->ValidateLogicSelection(
+					root, Name().c_str());
+			});
 		} else {
 			blog(LOG_WARNING,
 			     "discarding condition entry with unknown id (%s) for macro %s",
@@ -847,12 +887,15 @@ bool Macro::Load(obs_data_t *obj)
 	OBSDataArrayAutoRelease actions = obs_data_get_array(obj, "actions");
 	count = obs_data_array_count(actions);
 	for (size_t i = 0; i < count; i++) {
-		OBSDataAutoRelease array_obj = obs_data_array_item(actions, i);
-		std::string id = obs_data_get_string(array_obj, "id");
+		OBSDataAutoRelease arrayObj = obs_data_array_item(actions, i);
+		std::string id = obs_data_get_string(arrayObj, "id");
 		auto newEntry = MacroActionFactory::Create(id, this);
 		if (newEntry) {
 			_actions.emplace_back(newEntry);
-			_actions.back()->Load(array_obj);
+			auto action = _actions.back().get();
+			action->WithLock([action, &arrayObj]() {
+				action->Load(arrayObj);
+			});
 		} else {
 			blog(LOG_WARNING,
 			     "discarding action entry with unknown id (%s) for macro %s",
@@ -865,13 +908,16 @@ bool Macro::Load(obs_data_t *obj)
 		obs_data_get_array(obj, "elseActions");
 	count = obs_data_array_count(elseActions);
 	for (size_t i = 0; i < count; i++) {
-		OBSDataAutoRelease array_obj =
+		OBSDataAutoRelease arrayObj =
 			obs_data_array_item(elseActions, i);
-		std::string id = obs_data_get_string(array_obj, "id");
+		std::string id = obs_data_get_string(arrayObj, "id");
 		auto newEntry = MacroActionFactory::Create(id, this);
 		if (newEntry) {
 			_elseActions.emplace_back(newEntry);
-			_elseActions.back()->Load(array_obj);
+			auto action = _elseActions.back().get();
+			action->WithLock([action, &arrayObj]() {
+				action->Load(arrayObj);
+			});
 		} else {
 			blog(LOG_WARNING,
 			     "discarding elseAction entry with unknown id (%s) for macro %s",
@@ -888,13 +934,13 @@ bool Macro::Load(obs_data_t *obj)
 bool Macro::PostLoad()
 {
 	for (auto &c : _conditions) {
-		c->PostLoad();
+		c->WithLock([c]() { c->PostLoad(); });
 	}
 	for (auto &a : _actions) {
-		a->PostLoad();
+		a->WithLock([a]() { a->PostLoad(); });
 	}
 	for (auto &a : _elseActions) {
-		a->PostLoad();
+		a->WithLock([a]() { a->PostLoad(); });
 	}
 	return true;
 }
@@ -977,224 +1023,6 @@ void Macro::EnablePauseHotkeys(bool value)
 bool Macro::PauseHotkeysEnabled() const
 {
 	return _registerHotkeys;
-}
-
-void Macro::SaveDockSettings(obs_data_t *obj, bool saveForCopy) const
-{
-	auto dockSettings = obs_data_create();
-	obs_data_set_bool(dockSettings, "register", _registerDock);
-	obs_data_set_bool(dockSettings, "hasRunButton", _dockHasRunButton);
-	obs_data_set_bool(dockSettings, "hasPauseButton", _dockHasPauseButton);
-	obs_data_set_bool(dockSettings, "hasStatusLabel", _dockHasStatusLabel);
-	obs_data_set_bool(dockSettings, "highlightIfConditionsTrue",
-			  _dockHighlight);
-	_runButtonText.Save(dockSettings, "runButtonText");
-	_pauseButtonText.Save(dockSettings, "pauseButtonText");
-	_unpauseButtonText.Save(dockSettings, "unpauseButtonText");
-	_conditionsTrueStatusText.Save(dockSettings,
-				       "conditionsTrueStatusText");
-	_conditionsFalseStatusText.Save(dockSettings,
-					"conditionsFalseStatusText");
-	if (saveForCopy) {
-		auto uuid = GenerateDockId();
-		obs_data_set_string(dockSettings, "dockId", uuid.c_str());
-
-	} else {
-		obs_data_set_string(dockSettings, "dockId", _dockId.c_str());
-	}
-	obs_data_set_int(dockSettings, "version", 1);
-	obs_data_set_obj(obj, "dockSettings", dockSettings);
-	obs_data_release(dockSettings);
-}
-
-void Macro::LoadDockSettings(obs_data_t *obj)
-{
-	auto dockSettings = obs_data_get_obj(obj, "dockSettings");
-	if (!dockSettings) {
-		// TODO: Remove this fallback
-		_dockHasRunButton = obs_data_get_bool(obj, "dockHasRunButton");
-		_dockHasPauseButton =
-			obs_data_get_bool(obj, "dockHasPauseButton");
-		EnableDock(obs_data_get_bool(obj, "registerDock"));
-		return;
-	}
-
-	if (!obs_data_has_user_value(dockSettings, "version")) {
-		_dockId = std::string("ADVSS-") + _name;
-	} else {
-		_dockId = obs_data_get_string(dockSettings, "dockId");
-	}
-
-	const bool dockEnabled = obs_data_get_bool(dockSettings, "register");
-
-	// TODO: remove these default settings in a future version
-	obs_data_set_default_string(
-		dockSettings, "runButtonText",
-		obs_module_text("AdvSceneSwitcher.macroDock.run"));
-	obs_data_set_default_string(
-		dockSettings, "pauseButtonText",
-		obs_module_text("AdvSceneSwitcher.macroDock.pause"));
-	obs_data_set_default_string(
-		dockSettings, "unpauseButtonText",
-		obs_module_text("AdvSceneSwitcher.macroDock.unpause"));
-	_runButtonText.Load(dockSettings, "runButtonText");
-	_pauseButtonText.Load(dockSettings, "pauseButtonText");
-	_unpauseButtonText.Load(dockSettings, "unpauseButtonText");
-	_conditionsTrueStatusText.Load(dockSettings,
-				       "conditionsTrueStatusText");
-	_conditionsFalseStatusText.Load(dockSettings,
-					"conditionsFalseStatusText");
-	if (dockEnabled) {
-		_dockHasRunButton =
-			obs_data_get_bool(dockSettings, "hasRunButton");
-		_dockHasPauseButton =
-			obs_data_get_bool(dockSettings, "hasPauseButton");
-		_dockHasStatusLabel =
-			obs_data_get_bool(dockSettings, "hasStatusLabel");
-		_dockHighlight = obs_data_get_bool(dockSettings,
-						   "highlightIfConditionsTrue");
-	}
-	EnableDock(dockEnabled);
-	obs_data_release(dockSettings);
-}
-
-void Macro::EnableDock(bool value)
-{
-	// Reset dock regardless
-	RemoveDock();
-
-	if (!value) {
-		_registerDock = value;
-		return;
-	}
-
-	_dock = new MacroDock(GetWeakMacroByName(_name.c_str()), _runButtonText,
-			      _pauseButtonText, _unpauseButtonText,
-			      _conditionsTrueStatusText,
-			      _conditionsFalseStatusText, _dockHighlight);
-
-	if (!obs_frontend_add_dock_by_id(_dockId.c_str(), _name.c_str(),
-					 _dock)) {
-		blog(LOG_INFO, "failed to add macro dock for macro %s",
-		     _name.c_str());
-		_dock->deleteLater();
-		_dock = nullptr;
-		_registerDock = false;
-		return;
-	}
-
-	_registerDock = value;
-}
-
-void Macro::SetDockHasRunButton(bool value)
-{
-	_dockHasRunButton = value;
-	if (!_dock) {
-		return;
-	}
-	_dock->ShowRunButton(value);
-}
-
-void Macro::SetDockHasPauseButton(bool value)
-{
-	_dockHasPauseButton = value;
-	if (!_dock) {
-		return;
-	}
-	_dock->ShowPauseButton(value);
-}
-
-void Macro::SetDockHasStatusLabel(bool value)
-{
-	_dockHasStatusLabel = value;
-	if (!_dock) {
-		return;
-	}
-	_dock->ShowStatusLabel(value);
-}
-
-void Macro::SetHighlightEnable(bool value)
-{
-	_dockHighlight = value;
-	if (!_dock) {
-		return;
-	}
-	_dock->EnableHighlight(value);
-}
-
-void Macro::SetRunButtonText(const std::string &text)
-{
-	_runButtonText = text;
-	if (!_dock) {
-		return;
-	}
-	_dock->SetRunButtonText(text);
-}
-
-void Macro::SetPauseButtonText(const std::string &text)
-{
-	_pauseButtonText = text;
-	if (!_dock) {
-		return;
-	}
-	_dock->SetPauseButtonText(text);
-}
-
-void Macro::SetUnpauseButtonText(const std::string &text)
-{
-	_unpauseButtonText = text;
-	if (!_dock) {
-		return;
-	}
-	_dock->SetUnpauseButtonText(text);
-}
-
-void Macro::SetConditionsTrueStatusText(const std::string &text)
-{
-	_conditionsTrueStatusText = text;
-	if (!_dock) {
-		return;
-	}
-	_dock->SetConditionsTrueText(text);
-}
-
-StringVariable Macro::ConditionsTrueStatusText() const
-{
-	return _conditionsTrueStatusText;
-}
-
-void Macro::SetConditionsFalseStatusText(const std::string &text)
-{
-	_conditionsFalseStatusText = text;
-	if (!_dock) {
-		return;
-	}
-	_dock->SetConditionsFalseText(text);
-}
-
-StringVariable Macro::ConditionsFalseStatusText() const
-{
-	return _conditionsFalseStatusText;
-}
-
-void Macro::RemoveDock()
-{
-	obs_frontend_remove_dock(_dockId.c_str());
-	_dock = nullptr;
-}
-
-std::string Macro::GenerateDockId()
-{
-#if LIBOBS_API_VER > MAKE_SEMANTIC_VERSION(30, 0, 0)
-	auto uuid = os_generate_uuid();
-	auto id = std::string("advss-macro-dock-") + std::string(uuid);
-	bfree(uuid);
-	return id;
-
-#else
-	static std::atomic_int16_t idCounter = 0;
-	return std::to_string(++idCounter);
-#endif
 }
 
 static void pauseCB(void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed)
@@ -1460,6 +1288,14 @@ std::weak_ptr<Macro> GetWeakMacroByName(const char *name)
 void InvalidateMacroTempVarValues()
 {
 	for (const auto &m : macros) {
+		// Do not invalidate the temp vars set during condition checks
+		// or action executions running in parallel to the "main" macro
+		// loop, as otherwise access to the information stored in those
+		// variables might get lost while those checks or actions are
+		// still ongoing.
+		if (!m->ParallelTasksCompleted()) {
+			continue;
+		}
 		m->InvalidateTempVarValues();
 	}
 }

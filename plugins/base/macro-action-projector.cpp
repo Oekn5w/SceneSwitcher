@@ -1,10 +1,11 @@
 #include "macro-action-projector.hpp"
 #include "layout-helpers.hpp"
-#include "monitor-helpers.hpp"
 #include "selection-helpers.hpp"
 #include "source-helpers.hpp"
 
 #include <obs-frontend-api.h>
+#include <QApplication>
+#include <QWindow>
 
 namespace advss {
 
@@ -28,8 +29,34 @@ const static std::map<MacroActionProjector::Type, std::string> selectionTypes = 
 	 "AdvSceneSwitcher.action.projector.type.multiview"},
 };
 
+static void closeOBSProjectorWindows(const std::string expectedWindowTitle,
+				     const RegexConfig &regex)
+{
+	for (QWindow *widget : QApplication::allWindows()) {
+		if (!widget->property("isOBSProjectorWindow").toBool()) {
+			continue;
+		}
+
+		auto const windowTitle = widget->title().toStdString();
+		if (!regex.Enabled() && expectedWindowTitle != windowTitle) {
+			continue;
+		}
+
+		if (!regex.Matches(windowTitle, expectedWindowTitle)) {
+			continue;
+		}
+
+		widget->close();
+	}
+}
+
 bool MacroActionProjector::PerformAction()
 {
+	if (_action == Action::CLOSE) {
+		closeOBSProjectorWindows(_projectorWindowName, _regex);
+		return true;
+	}
+
 	std::string name = "";
 	const char *type = "";
 
@@ -78,10 +105,16 @@ bool MacroActionProjector::PerformAction()
 
 void MacroActionProjector::LogAction() const
 {
+	if (_action == Action::CLOSE) {
+		ablog(LOG_INFO, "closing projector window \"%s\"",
+		      _projectorWindowName.c_str());
+		return;
+	}
+
 	auto it = selectionTypes.find(_type);
 	if (it != selectionTypes.end()) {
 		ablog(LOG_INFO,
-		      "performed projector action \"%s\" with"
+		      "open projector \"%s\" with"
 		      "source \"%s\","
 		      "scene \"%s\","
 		      "monitor %d",
@@ -96,24 +129,30 @@ void MacroActionProjector::LogAction() const
 bool MacroActionProjector::Save(obs_data_t *obj) const
 {
 	MacroAction::Save(obj);
+	obs_data_set_int(obj, "action", static_cast<int>(_action));
 	obs_data_set_int(obj, "type", static_cast<int>(_type));
 	obs_data_set_int(obj, "monitor", _monitor);
 	obs_data_set_string(obj, "monitorName", _monitorName.c_str());
 	obs_data_set_bool(obj, "fullscreen", _fullscreen);
 	_scene.Save(obj);
 	_source.Save(obj);
+	_projectorWindowName.Save(obj, "projectorWindowName");
+	_regex.Save(obj);
 	return true;
 }
 
 bool MacroActionProjector::Load(obs_data_t *obj)
 {
 	MacroAction::Load(obj);
+	_action = static_cast<Action>(obs_data_get_int(obj, "action"));
 	_type = static_cast<Type>(obs_data_get_int(obj, "type"));
 	_monitor = obs_data_get_int(obj, "monitor");
 	_monitorName = obs_data_get_string(obj, "monitorName");
 	_fullscreen = obs_data_get_bool(obj, "fullscreen");
 	_scene.Load(obj);
 	_source.Load(obj);
+	_projectorWindowName.Load(obj, "projectorWindowName");
+	_regex.Load(obj);
 	return true;
 }
 
@@ -131,6 +170,7 @@ void MacroActionProjector::ResolveVariablesToFixedValues()
 {
 	_source.ResolveVariables();
 	_scene.ResolveVariables();
+	_projectorWindowName.ResolveVariables();
 }
 
 void MacroActionProjector::SetMonitor(int idx)
@@ -166,14 +206,22 @@ bool MacroActionProjector::MonitorSetupChanged() const
 	       QString::fromStdString(_monitorName);
 }
 
-static inline void populateSelectionTypes(QComboBox *list)
+static void populateActionSelection(QComboBox *list)
 {
-	for (auto entry : selectionTypes) {
-		list->addItem(obs_module_text(entry.second.c_str()));
+	list->addItem(obs_module_text(
+		"AdvSceneSwitcher.action.projector.action.open"));
+	list->addItem(obs_module_text(
+		"AdvSceneSwitcher.action.projector.action.close"));
+}
+
+static void populateSelectionTypes(QComboBox *list)
+{
+	for (const auto &[_, name] : selectionTypes) {
+		list->addItem(obs_module_text(name.c_str()));
 	}
 }
 
-static inline void populateWindowTypes(QComboBox *list)
+static void populateWindowTypes(QComboBox *list)
 {
 	list->addItem(
 		obs_module_text("AdvSceneSwitcher.action.projector.windowed"));
@@ -181,26 +229,42 @@ static inline void populateWindowTypes(QComboBox *list)
 		"AdvSceneSwitcher.action.projector.fullscreen"));
 }
 
+static QStringList getSourcesList()
+{
+	auto sources = GetSourceNames();
+	sources.sort();
+	return sources;
+}
+
 MacroActionProjectorEdit::MacroActionProjectorEdit(
 	QWidget *parent, std::shared_ptr<MacroActionProjector> entryData)
 	: QWidget(parent),
-	  _windowTypes(new QComboBox()),
+	  _actions(new QComboBox()),
 	  _types(new QComboBox()),
-	  _scenes(new SceneSelectionWidget(window(), true, false, true, true,
+	  _windowTypes(new QComboBox()),
+	  _scenes(new SceneSelectionWidget(this, true, false, true, true,
 					   true)),
-	  _sources(new SourceSelectionWidget(window(), QStringList(), true)),
-	  _monitorSelection(new QHBoxLayout()),
-	  _monitors(new QComboBox())
+	  _sources(new SourceSelectionWidget(this, getSourcesList, true)),
+	  _monitors(new MonitorSelectionWidget(this)),
+	  _projectorWindowName(new VariableLineEdit(this)),
+	  _regex(new RegexConfigWidget(this)),
+	  _layout(new QHBoxLayout(this))
 {
+	// The obs_frontend_open_projector() function does not seem to support
+	// scenes of secondary canvases
+	_scenes->LockToMainCanvas();
+
+	populateActionSelection(_actions);
 	populateWindowTypes(_windowTypes);
 	populateSelectionTypes(_types);
-	auto sources = GetSourceNames();
-	sources.sort();
-	_sources->SetSourceNameList(sources);
+
 	_monitors->addItems(GetMonitorNames());
 	_monitors->setPlaceholderText(
 		obs_module_text("AdvSceneSwitcher.selectDisplay"));
+	_monitors->SetAllowUnmatchedSelection(false);
 
+	QWidget::connect(_actions, SIGNAL(currentIndexChanged(int)), this,
+			 SLOT(ActionChanged(int)));
 	QWidget::connect(_windowTypes, SIGNAL(currentIndexChanged(int)), this,
 			 SLOT(WindowTypeChanged(int)));
 	QWidget::connect(_types, SIGNAL(currentIndexChanged(int)), this,
@@ -212,24 +276,15 @@ MacroActionProjectorEdit::MacroActionProjectorEdit(
 			 SLOT(SourceChanged(const SourceSelection &)));
 	QWidget::connect(_monitors, SIGNAL(currentIndexChanged(int)), this,
 			 SLOT(MonitorChanged(int)));
-
-	std::unordered_map<std::string, QWidget *> widgetPlaceholders = {
-		{"{{windowTypes}}", _windowTypes}, {"{{types}}", _types},
-		{"{{scenes}}", _scenes},           {"{{sources}}", _sources},
-		{"{{monitors}}", _monitors},
-	};
-
-	PlaceWidgets(obs_module_text(
-			     "AdvSceneSwitcher.action.projector.entry.monitor"),
-		     _monitorSelection, widgetPlaceholders);
-
-	QHBoxLayout *mainLayout = new QHBoxLayout;
-	PlaceWidgets(obs_module_text("AdvSceneSwitcher.action.projector.entry"),
-		     mainLayout, widgetPlaceholders);
-	mainLayout->insertLayout(mainLayout->count() - 1, _monitorSelection);
-	setLayout(mainLayout);
+	QWidget::connect(_projectorWindowName, SIGNAL(editingFinished()), this,
+			 SLOT(ProjectorWindowNameChanged()));
+	QWidget::connect(_regex,
+			 SIGNAL(RegexConfigChanged(const RegexConfig &)), this,
+			 SLOT(RegexChanged(const RegexConfig &)));
 
 	_entryData = entryData;
+	SetWidgetLayout();
+	setLayout(_layout);
 	UpdateEntryData();
 	_loading = false;
 }
@@ -239,11 +294,15 @@ void MacroActionProjectorEdit::UpdateEntryData()
 	if (!_entryData) {
 		return;
 	}
+
+	_actions->setCurrentIndex(static_cast<int>(_entryData->_action));
 	_windowTypes->setCurrentIndex(_entryData->_fullscreen ? 1 : 0);
 	_types->setCurrentIndex(static_cast<int>(_entryData->_type));
 	_scenes->SetScene(_entryData->_scene);
 	_sources->SetSource(_entryData->_source);
 	_monitors->setCurrentIndex(_entryData->GetMonitor());
+	_projectorWindowName->setText(_entryData->_projectorWindowName);
+	_regex->SetRegexConfig(_entryData->_regex);
 	SetWidgetVisibility();
 }
 
@@ -265,12 +324,26 @@ void MacroActionProjectorEdit::MonitorChanged(int value)
 	_entryData->SetMonitor(value);
 }
 
+void MacroActionProjectorEdit::ProjectorWindowNameChanged()
+{
+	GUARD_LOADING_AND_LOCK();
+	_entryData->_projectorWindowName =
+		_projectorWindowName->text().toStdString();
+}
+
+void MacroActionProjectorEdit::RegexChanged(const RegexConfig &regex)
+{
+	GUARD_LOADING_AND_LOCK();
+	_entryData->_regex = regex;
+}
+
 void MacroActionProjectorEdit::WindowTypeChanged(int)
 {
 	GUARD_LOADING_AND_LOCK();
 	_entryData->_fullscreen =
 		_windowTypes->currentText() ==
 		obs_module_text("AdvSceneSwitcher.action.projector.fullscreen");
+	SetWidgetLayout();
 	SetWidgetVisibility();
 }
 
@@ -281,20 +354,75 @@ void MacroActionProjectorEdit::TypeChanged(int value)
 	SetWidgetVisibility();
 }
 
+void MacroActionProjectorEdit::ActionChanged(int idx)
+{
+	GUARD_LOADING_AND_LOCK();
+	_entryData->_action = static_cast<MacroActionProjector::Action>(idx);
+	SetWidgetLayout();
+	SetWidgetVisibility();
+}
+
+void MacroActionProjectorEdit::SetWidgetLayout()
+{
+	const std::unordered_map<std::string, QWidget *> widgetPlaceholders = {
+		{"{{actions}}", _actions},
+		{"{{windowTypes}}", _windowTypes},
+		{"{{types}}", _types},
+		{"{{scenes}}", _scenes},
+		{"{{sources}}", _sources},
+		{"{{monitors}}", _monitors},
+		{"{{projectorWindowName}}", _projectorWindowName},
+		{"{{regex}}", _regex},
+	};
+
+	for (const auto &[_, widget] : widgetPlaceholders) {
+		_layout->removeWidget(widget);
+	}
+	ClearLayout(_layout);
+
+	const char *layoutText;
+	if (_entryData->_action == MacroActionProjector::Action::CLOSE) {
+		layoutText = "AdvSceneSwitcher.action.projector.entry.close";
+	} else if (_entryData->_fullscreen) {
+		layoutText =
+			"AdvSceneSwitcher.action.projector.entry.open.fullscreen";
+	} else {
+		layoutText =
+			"AdvSceneSwitcher.action.projector.entry.open.windowed";
+	}
+
+	PlaceWidgets(obs_module_text(layoutText), _layout, widgetPlaceholders);
+}
+
 void MacroActionProjectorEdit::SetWidgetVisibility()
 {
 	if (!_entryData) {
 		return;
 	}
 
-	_scenes->setVisible(_entryData->_type ==
-			    MacroActionProjector::Type::SCENE);
-	_sources->setVisible(_entryData->_type ==
-			     MacroActionProjector::Type::SOURCE);
-	SetLayoutVisible(_monitorSelection, _entryData->_fullscreen);
+	const auto &action = _entryData->_action;
+	const auto &type = _entryData->_type;
+
+	_projectorWindowName->setVisible(action ==
+					 MacroActionProjector::Action::CLOSE);
+	_regex->setVisible(action == MacroActionProjector::Action::CLOSE);
+	_types->setVisible(action == MacroActionProjector::Action::OPEN);
+	_windowTypes->setVisible(action == MacroActionProjector::Action::OPEN);
+	_scenes->setVisible(action == MacroActionProjector::Action::OPEN &&
+			    type == MacroActionProjector::Type::SCENE);
+	_sources->setVisible(action == MacroActionProjector::Action::OPEN &&
+			     type == MacroActionProjector::Type::SOURCE);
+	_monitors->setVisible(action == MacroActionProjector::Action::OPEN &&
+			      _entryData->_fullscreen);
 
 	adjustSize();
 	updateGeometry();
+
+	if (action == MacroActionProjector::Action::CLOSE) {
+		RemoveStretchIfPresent(_layout);
+	} else {
+		AddStretchIfNecessary(_layout);
+	}
 }
 
 } // namespace advss

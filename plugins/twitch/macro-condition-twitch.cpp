@@ -113,6 +113,8 @@ const static std::map<MacroConditionTwitch::Condition, std::string> conditionTyp
 	 "AdvSceneSwitcher.condition.twitch.type.event.channel.stream.online.premiere"},
 	{MacroConditionTwitch::Condition::STREAM_ONLINE_RERUN_EVENT,
 	 "AdvSceneSwitcher.condition.twitch.type.event.channel.stream.online.rerun"},
+	{MacroConditionTwitch::Condition::COMMERCIAL_START,
+	 "AdvSceneSwitcher.condition.twitch.type.event.channel.commercial.start"},
 	{MacroConditionTwitch::Condition::LIVE_POLLING,
 	 "AdvSceneSwitcher.condition.twitch.type.polling.channel.live"},
 	{MacroConditionTwitch::Condition::TITLE_POLLING,
@@ -121,6 +123,10 @@ const static std::map<MacroConditionTwitch::Condition, std::string> conditionTyp
 	 "AdvSceneSwitcher.condition.twitch.type.polling.channel.category"},
 	{MacroConditionTwitch::Condition::CHAT_MESSAGE_RECEIVED,
 	 "AdvSceneSwitcher.condition.twitch.type.chat.message"},
+	{MacroConditionTwitch::Condition::CHAT_MESSAGE_REMOVED,
+	 "AdvSceneSwitcher.condition.twitch.type.chat.messageRemoved"},
+	{MacroConditionTwitch::Condition::CHAT_CLEARED,
+	 "AdvSceneSwitcher.condition.twitch.type.chat.cleared"},
 	{MacroConditionTwitch::Condition::CHAT_USER_JOINED,
 	 "AdvSceneSwitcher.condition.twitch.type.chat.userJoined"},
 	{MacroConditionTwitch::Condition::CHAT_USER_LEFT,
@@ -149,6 +155,8 @@ const static std::map<MacroConditionTwitch::Condition, std::string> eventIdentif
 	 "channel.shoutout.create"},
 	{MacroConditionTwitch::Condition::SHOUTOUT_INBOUND_EVENT,
 	 "channel.shoutout.receive"},
+	{MacroConditionTwitch::Condition::COMMERCIAL_START,
+	 "channel.ad_break.begin"},
 	{MacroConditionTwitch::Condition::POLL_START_EVENT,
 	 "channel.poll.begin"},
 	{MacroConditionTwitch::Condition::POLL_PROGRESS_EVENT,
@@ -257,65 +265,15 @@ void MacroConditionTwitch::ResetChatConnection()
 	_chatConnection.reset();
 }
 
-static void
-setTempVarsHelper(const std::string &jsonStr,
-		  std::function<void(const char *, const char *)> setVar)
-{
-	try {
-		auto json = nlohmann::json::parse(jsonStr);
-		for (auto it = json.begin(); it != json.end(); ++it) {
-			if (it->is_string()) {
-				setVar(it.key().c_str(),
-				       it->get<std::string>().c_str());
-				continue;
-			}
-			setVar(it.key().c_str(), it->dump().c_str());
-		}
-	} catch (const nlohmann::json::exception &e) {
-		vblog(LOG_INFO, "%s", jsonStr.c_str());
-		vblog(LOG_INFO, "%s", e.what());
-	}
-}
-
-static void
-setTempVarsHelper(obs_data_t *data,
-		  std::function<void(const char *, const char *)> setVar)
-{
-	auto jsonStr = obs_data_get_json(data);
-	if (!jsonStr) {
-		return;
-	}
-
-	setTempVarsHelper(jsonStr, setVar);
-}
-
 bool MacroConditionTwitch::CheckChannelGenericEvents()
 {
-	if (!_eventBuffer) {
-		return false;
-	}
-
-	while (!_eventBuffer->Empty()) {
-		auto event = _eventBuffer->ConsumeMessage();
-		if (!event) {
-			continue;
-		}
-		if (_subscriptionID != event->id) {
-			continue;
-		}
-		SetVariableValue(event->ToString());
-		setTempVarsHelper(event->data,
-				  [this](const char *id, const char *value) {
-					  SetTempVarValue(id, value);
-				  });
-
-		if (_clearBufferOnMatch) {
-			_eventBuffer->Clear();
-		}
-		return true;
-	}
-
-	return false;
+	return HandleMatchingSubscriptionEvents([this](const Event &event) {
+		SetVariableValue(event.ToString());
+		SetJsonTempVars(event.data,
+				[this](const char *id, const char *value) {
+					SetTempVarValue(id, value);
+				});
+	});
 }
 
 bool MacroConditionTwitch::CheckChannelLiveEvents()
@@ -345,10 +303,105 @@ bool MacroConditionTwitch::CheckChannelLiveEvents()
 		}
 
 		SetVariableValue(event->ToString());
-		setTempVarsHelper(event->data,
-				  [this](const char *id, const char *value) {
-					  SetTempVarValue(id, value);
-				  });
+		SetJsonTempVars(event->data,
+				[this](const char *id, const char *value) {
+					SetTempVarValue(id, value);
+				});
+
+		if (_clearBufferOnMatch) {
+			_eventBuffer->Clear();
+		}
+		return true;
+	}
+
+	return false;
+}
+
+bool MacroConditionTwitch::CheckChannelRewardChangeEvents()
+{
+	return HandleMatchingSubscriptionEvents([this](const Event &event) {
+		SetVariableValue(event.ToString());
+		SetJsonTempVars(event.data,
+				[this](const char *id, const char *value) {
+					SetTempVarValue(id, value);
+				});
+
+		OBSDataAutoRelease image =
+			obs_data_get_obj(event.data, "image");
+		SetTempVarValue("image.url_4x",
+				obs_data_get_string(image, "url_4x"));
+
+		OBSDataAutoRelease default_image =
+			obs_data_get_obj(event.data, "default_image");
+		SetTempVarValue("default_image.url_4x",
+				obs_data_get_string(default_image, "url_4x"));
+
+		OBSDataAutoRelease max_per_stream =
+			obs_data_get_obj(event.data, "max_per_stream");
+		SetTempVarValue("max_per_stream.is_enabled",
+				obs_data_get_bool(max_per_stream,
+						  "is_enabled"));
+		SetTempVarValue("max_per_stream.max_per_stream",
+				std::to_string(obs_data_get_int(max_per_stream,
+								"value")));
+
+		OBSDataAutoRelease max_per_user_per_stream =
+			obs_data_get_obj(event.data, "max_per_user_per_stream");
+		SetTempVarValue("max_per_user_per_stream.is_enabled",
+				obs_data_get_bool(max_per_user_per_stream,
+						  "is_enabled"));
+		SetTempVarValue(
+			"max_per_user_per_stream.max_per_user_per_stream",
+			std::to_string(obs_data_get_int(max_per_user_per_stream,
+							"value")));
+
+		OBSDataAutoRelease global_cooldown =
+			obs_data_get_obj(event.data, "global_cooldown");
+		SetTempVarValue("global_cooldown.is_enabled",
+				obs_data_get_bool(global_cooldown,
+						  "is_enabled"));
+		SetTempVarValue(
+			"max_per_user_per_stream.global_cooldown_seconds",
+			std::to_string(obs_data_get_int(max_per_user_per_stream,
+							"seconds")));
+	});
+}
+
+bool MacroConditionTwitch::CheckChannelRewardRedemptionEvents()
+{
+	return HandleMatchingSubscriptionEvents([this](const Event &event) {
+		SetVariableValue(event.ToString());
+		SetJsonTempVars(event.data,
+				[this](const char *id, const char *value) {
+					SetTempVarValue(id, value);
+				});
+		OBSDataAutoRelease rewardInfo =
+			obs_data_get_obj(event.data, "reward");
+		SetJsonTempVars(rewardInfo, [this](const char *nestedId,
+						   const char *value) {
+			const std::string id =
+				"reward." + std::string(nestedId);
+			SetTempVarValue(id, value);
+		});
+	});
+}
+
+bool MacroConditionTwitch::HandleMatchingSubscriptionEvents(
+	const std::function<void(const Event &)> &matchCb)
+{
+	if (!_eventBuffer) {
+		return false;
+	}
+
+	while (!_eventBuffer->Empty()) {
+		auto event = _eventBuffer->ConsumeMessage();
+		if (!event) {
+			continue;
+		}
+		if (_subscriptionID != event->id) {
+			continue;
+		}
+		matchCb(*event);
 
 		if (_clearBufferOnMatch) {
 			_eventBuffer->Clear();
@@ -371,87 +424,128 @@ static bool stringMatches(const RegexConfig &regex, const std::string &string,
 
 bool MacroConditionTwitch::CheckChatMessages(TwitchToken &token)
 {
-	if (!_chatConnection) {
-		_chatConnection = TwitchChatConnection::GetChatConnection(
-			token, _channel);
-		if (!_chatConnection) {
-			return false;
-		}
-		_chatBuffer = _chatConnection->RegisterForMessages();
+	if (!ChatConnectionIsSetup(token)) {
 		return false;
 	}
 
-	while (!_chatBuffer->Empty()) {
-		auto message = _chatBuffer->ConsumeMessage();
-		if (!message) {
-			continue;
+	return HandleChatEvents([this](const IRCMessage &message) -> bool {
+		if (message.type != IRCMessage::Type::MESSAGE_RECEIVED) {
+			return false;
 		}
 
-		// Join and leave message don't have any message data
-		if (message->properties.leftChannel ||
-		    message->properties.joinedChannel) {
-			continue;
+		if (!_chatMessagePattern.Matches(message)) {
+			return false;
 		}
 
-		if (!_chatMessagePattern.Matches(*message)) {
-			continue;
-		}
-
-		SetTempVarValue("id", message->properties.id);
-		SetTempVarValue("chat_message", message->message);
-		SetTempVarValue("user_id", message->properties.userId);
-		SetTempVarValue("user_login", message->source.nick);
-		SetTempVarValue("user_name", message->properties.displayName);
-		SetTempVarValue("user_type", message->properties.userType);
+		SetTempVarValue("id", message.properties.id);
+		SetTempVarValue("chat_message", message.message);
+		SetTempVarValue("user_id", message.properties.userId);
+		SetTempVarValue("user_login", message.source.nick);
+		SetTempVarValue("user_name", message.properties.displayName);
+		SetTempVarValue("user_type", message.properties.userType);
 		SetTempVarValue("reply_parent_id",
-				message->properties.replyParentId);
+				message.properties.replyParentId);
 		SetTempVarValue("reply_parent_message",
-				message->properties.replyParentBody);
+				message.properties.replyParentBody);
 		SetTempVarValue("reply_parent_user_id",
-				message->properties.replyParentUserId);
+				message.properties.replyParentUserId);
 		SetTempVarValue("reply_parent_user_login",
-				message->properties.replyParentUserLogin);
+				message.properties.replyParentUserLogin);
 		SetTempVarValue("reply_parent_user_name",
-				message->properties.replyParentDisplayName);
+				message.properties.replyParentDisplayName);
 		SetTempVarValue("root_parent_id",
-				message->properties.rootParentId);
+				message.properties.rootParentId);
 		SetTempVarValue("root_parent_user_login",
-				message->properties.rootParentUserLogin);
+				message.properties.rootParentUserLogin);
 		SetTempVarValue("badge_info",
-				message->properties.badgeInfoString);
-		SetTempVarValue("badges", message->properties.badgesString);
+				message.properties.badgeInfoString);
+		SetTempVarValue("badges", message.properties.badgesString);
 		SetTempVarValue("bits",
-				std::to_string(message->properties.bits));
-		SetTempVarValue("color", message->properties.color);
-		SetTempVarValue("emotes", message->properties.emotesString);
+				std::to_string(message.properties.bits));
+		SetTempVarValue("color", message.properties.color);
+		SetTempVarValue("emotes", message.properties.emotesString);
 		SetTempVarValue("timestamp",
-				std::to_string(message->properties.timestamp));
+				std::to_string(message.properties.timestamp));
 		SetTempVarValue("is_emotes_only",
-				message->properties.isUsingOnlyEmotes
-					? "true"
-					: "false");
+				message.properties.isUsingOnlyEmotes ? "true"
+								     : "false");
 		SetTempVarValue("is_first_message",
-				message->properties.isFirstMessage ? "true"
-								   : "false");
+				message.properties.isFirstMessage ? "true"
+								  : "false");
 		SetTempVarValue("is_mod",
-				message->properties.isMod ? "true" : "false");
-		SetTempVarValue("is_subscriber",
-				message->properties.isSubscriber ? "true"
-								 : "false");
+				message.properties.isMod ? "true" : "false");
+		SetTempVarValue("is_subscriber", message.properties.isSubscriber
+							 ? "true"
+							 : "false");
 		SetTempVarValue("is_turbo",
-				message->properties.isTurbo ? "true" : "false");
+				message.properties.isTurbo ? "true" : "false");
 		SetTempVarValue("is_vip",
-				message->properties.isVIP ? "true" : "false");
-
-		if (_clearBufferOnMatch) {
-			_chatBuffer->Clear();
-		}
+				message.properties.isVIP ? "true" : "false");
 		return true;
-	}
-	return false;
+	});
 }
 
 bool MacroConditionTwitch::CheckChatUserJoinOrLeave(TwitchToken &token)
+{
+	if (!ChatConnectionIsSetup(token)) {
+		return false;
+	}
+
+	return HandleChatEvents([this](const IRCMessage &message) -> bool {
+		if ((_condition == Condition::CHAT_USER_JOINED &&
+		     message.type != IRCMessage::Type::USER_JOIN) ||
+		    (_condition == Condition::CHAT_USER_LEFT &&
+		     message.type != IRCMessage::Type::USER_LEAVE)) {
+			return false;
+		}
+
+		SetTempVarValue("user_login", message.source.nick);
+		return true;
+	});
+}
+
+bool MacroConditionTwitch::CheckChatClear(TwitchToken &token)
+{
+	if (!ChatConnectionIsSetup(token)) {
+		return false;
+	}
+
+	return HandleChatEvents([this](const IRCMessage &message) -> bool {
+		if (message.type != IRCMessage::Type::MESSAGE_CLEARED) {
+			return false;
+		}
+
+		SetTempVarValue("ban_duration",
+				std::to_string(message.properties.banDuration));
+		SetTempVarValue("login", message.message);
+		SetTempVarValue("user_id", message.properties.userId);
+		SetTempVarValue("timestamp",
+				std::to_string(message.properties.timestamp));
+		return true;
+	});
+}
+
+bool MacroConditionTwitch::CheckChatMessageRemove(TwitchToken &token)
+{
+	if (!ChatConnectionIsSetup(token)) {
+		return false;
+	}
+
+	return HandleChatEvents([this](const IRCMessage &message) -> bool {
+		if (message.type != IRCMessage::Type::MESSAGE_REMOVED) {
+			return false;
+		}
+
+		SetTempVarValue("message", message.message);
+		SetTempVarValue("message_id", message.properties.id);
+		SetTempVarValue("login", message.properties.userId);
+		SetTempVarValue("timestamp",
+				std::to_string(message.properties.timestamp));
+		return true;
+	});
+}
+
+bool MacroConditionTwitch::ChatConnectionIsSetup(TwitchToken &token)
 {
 	if (!_chatConnection) {
 		_chatConnection = TwitchChatConnection::GetChatConnection(
@@ -462,21 +556,21 @@ bool MacroConditionTwitch::CheckChatUserJoinOrLeave(TwitchToken &token)
 		_chatBuffer = _chatConnection->RegisterForMessages();
 		return false;
 	}
+	return true;
+}
 
+bool MacroConditionTwitch::HandleChatEvents(
+	const std::function<bool(const IRCMessage &)> &matchCb)
+{
 	while (!_chatBuffer->Empty()) {
 		auto message = _chatBuffer->ConsumeMessage();
 		if (!message) {
 			continue;
 		}
 
-		if ((_condition == Condition::CHAT_USER_JOINED &&
-		     !message->properties.joinedChannel) ||
-		    (_condition == Condition::CHAT_USER_LEFT &&
-		     !message->properties.leftChannel)) {
+		if (!matchCb(*message)) {
 			continue;
 		}
-
-		SetTempVarValue("user_login", message->source.nick);
 
 		if (_clearBufferOnMatch) {
 			_chatBuffer->Clear();
@@ -599,6 +693,7 @@ bool MacroConditionTwitch::CheckCondition()
 	case Condition::RAID_INBOUND_EVENT:
 	case Condition::SHOUTOUT_OUTBOUND_EVENT:
 	case Condition::SHOUTOUT_INBOUND_EVENT:
+	case Condition::COMMERCIAL_START:
 	case Condition::POLL_START_EVENT:
 	case Condition::POLL_PROGRESS_EVENT:
 	case Condition::POLL_END_EVENT:
@@ -618,16 +713,18 @@ bool MacroConditionTwitch::CheckCondition()
 	case Condition::CHARITY_CAMPAIGN_END_EVENT:
 	case Condition::SHIELD_MODE_START_EVENT:
 	case Condition::SHIELD_MODE_END_EVENT:
-	case Condition::POINTS_REWARD_ADDITION_EVENT:
-	case Condition::POINTS_REWARD_UPDATE_EVENT:
-	case Condition::POINTS_REWARD_DELETION_EVENT:
-	case Condition::POINTS_REWARD_REDEMPTION_EVENT:
-	case Condition::POINTS_REWARD_REDEMPTION_UPDATE_EVENT:
 	case Condition::USER_BAN_EVENT:
 	case Condition::USER_UNBAN_EVENT:
 	case Condition::USER_MODERATOR_ADDITION_EVENT:
 	case Condition::USER_MODERATOR_DELETION_EVENT:
 		return CheckChannelGenericEvents();
+	case Condition::POINTS_REWARD_ADDITION_EVENT:
+	case Condition::POINTS_REWARD_UPDATE_EVENT:
+	case Condition::POINTS_REWARD_DELETION_EVENT:
+		return CheckChannelRewardChangeEvents();
+	case Condition::POINTS_REWARD_REDEMPTION_EVENT:
+	case Condition::POINTS_REWARD_REDEMPTION_UPDATE_EVENT:
+		return CheckChannelRewardRedemptionEvents();
 	case Condition::STREAM_ONLINE_LIVE_EVENT:
 	case Condition::STREAM_ONLINE_PLAYLIST_EVENT:
 	case Condition::STREAM_ONLINE_WATCHPARTY_EVENT:
@@ -667,6 +764,20 @@ bool MacroConditionTwitch::CheckCondition()
 			return false;
 		}
 		return CheckChatMessages(*token);
+	}
+	case Condition::CHAT_CLEARED: {
+		auto token = _token.lock();
+		if (!token) {
+			return false;
+		}
+		return CheckChatClear(*token);
+	}
+	case Condition::CHAT_MESSAGE_REMOVED: {
+		auto token = _token.lock();
+		if (!token) {
+			return false;
+		}
+		return CheckChatMessageRemove(*token);
 	}
 	case Condition::CHAT_USER_JOINED:
 	case Condition::CHAT_USER_LEFT: {
@@ -751,6 +862,7 @@ bool MacroConditionTwitch::ConditionIsSupportedByToken()
 			{Condition::SHOUTOUT_INBOUND_EVENT,
 			 {{"moderator:read:shoutouts"},
 			  {"moderator:manage:shoutouts"}}},
+			{Condition::COMMERCIAL_START, {{"channel:read:ads"}}},
 			{Condition::POLL_START_EVENT,
 			 {{"channel:read:polls"}, {"channel:manage:polls"}}},
 			{Condition::POLL_PROGRESS_EVENT,
@@ -824,6 +936,10 @@ bool MacroConditionTwitch::ConditionIsSupportedByToken()
 			{Condition::CATEGORY_POLLING, {}},
 			{Condition::CHAT_MESSAGE_RECEIVED,
 			 {{"chat:read"}, {"chat:edit"}}},
+			{Condition::CHAT_MESSAGE_REMOVED,
+			 {{"chat:read"}, {"chat:edit"}}},
+			{Condition::CHAT_CLEARED,
+			 {{"chat:read"}, {"chat:edit"}}},
 			{Condition::CHAT_USER_JOINED,
 			 {{"chat:read"}, {"chat:edit"}}},
 			{Condition::CHAT_USER_LEFT,
@@ -860,6 +976,7 @@ void MacroConditionTwitch::RegisterEventSubscription()
 	case Condition::SUBSCRIPTION_GIFT_EVENT:
 	case Condition::SUBSCRIPTION_MESSAGE_EVENT:
 	case Condition::CHEER_EVENT:
+	case Condition::COMMERCIAL_START:
 	case Condition::POLL_START_EVENT:
 	case Condition::POLL_PROGRESS_EVENT:
 	case Condition::POLL_END_EVENT:
@@ -961,7 +1078,7 @@ waitForSubscription(const std::shared_ptr<TwitchToken> &token,
 		    const Subscription &subscription)
 {
 	return std::async(std::launch::async, [token, subscription]() {
-		auto id = EventSub::AddEventSubscribtion(token, subscription);
+		auto id = EventSub::AddEventSubscription(token, subscription);
 		return id;
 	});
 }
@@ -976,6 +1093,13 @@ void MacroConditionTwitch::AddChannelGenericEventSubscription(
 
 	auto token = _token.lock();
 	if (!token) {
+		return;
+	}
+
+	const auto channelID = _channel.GetUserID(*token);
+	if (!TwitchChannel::IsValid(channelID)) {
+		vblog(LOG_INFO, "skip %s because of invalid channel selection",
+		      __func__);
 		return;
 	}
 
@@ -1022,6 +1146,8 @@ void MacroConditionTwitch::SetupTempVars()
 	};
 
 	if (_condition != Condition::CHAT_MESSAGE_RECEIVED &&
+	    _condition != Condition::CHAT_MESSAGE_REMOVED &&
+	    _condition != Condition::CHAT_CLEARED &&
 	    _condition != Condition::CHAT_USER_JOINED &&
 	    _condition != Condition::CHAT_USER_LEFT &&
 	    _condition != Condition::RAID_INBOUND_EVENT &&
@@ -1084,6 +1210,14 @@ void MacroConditionTwitch::SetupTempVars()
 		setupTempVarHelper("is_anonymous", ".cheer");
 		setupTempVarHelper("message", ".cheer");
 		setupTempVarHelper("bits");
+		break;
+	case Condition::COMMERCIAL_START:
+		setupTempVarHelper("duration_seconds", ".commercial");
+		setupTempVarHelper("started_at", ".commercial");
+		setupTempVarHelper("is_automatic", ".commercial");
+		setupTempVarHelper("requester_user_id", ".commercial");
+		setupTempVarHelper("requester_user_login", ".commercial");
+		setupTempVarHelper("requester_user_name", ".commercial");
 		break;
 	case Condition::POLL_START_EVENT:
 	case Condition::POLL_PROGRESS_EVENT:
@@ -1206,25 +1340,41 @@ void MacroConditionTwitch::SetupTempVars()
 		setupTempVarHelper("is_user_input_required", ".reward");
 		setupTempVarHelper("should_redemptions_skip_request_queue",
 				   ".reward");
-		setupTempVarHelper("max_per_stream", ".reward");
-		setupTempVarHelper("max_per_user_per_stream", ".reward");
 		setupTempVarHelper("background_color", ".reward");
 		setupTempVarHelper("image", ".reward");
+		setupTempVarHelper("image.url_4x", ".reward");
 		setupTempVarHelper("default_image", ".reward");
-		setupTempVarHelper("global_cooldown", ".reward");
+		setupTempVarHelper("default_image.url_4x", ".reward");
 		setupTempVarHelper("cooldown_expires_at", ".reward");
 		setupTempVarHelper("redemptions_redeemed_current_stream",
+				   ".reward");
+		setupTempVarHelper("max_per_stream", ".reward");
+		setupTempVarHelper("max_per_stream.is_enabled", ".reward");
+		setupTempVarHelper("max_per_stream.max_per_stream", ".reward");
+		setupTempVarHelper("max_per_user_per_stream", ".reward");
+		setupTempVarHelper("max_per_user_per_stream.is_enabled",
+				   ".reward");
+		setupTempVarHelper(
+			"max_per_user_per_stream.max_per_user_per_stream",
+			".reward");
+		setupTempVarHelper("global_cooldown", ".reward");
+		setupTempVarHelper("global_cooldown.is_enabled", ".reward");
+		setupTempVarHelper("global_cooldown.global_cooldown_seconds",
 				   ".reward");
 		break;
 	case Condition::POINTS_REWARD_REDEMPTION_EVENT:
 	case Condition::POINTS_REWARD_REDEMPTION_UPDATE_EVENT:
-		setupTempVarHelper("id", ".reward");
+		setupTempVarHelper("id", ".redemption");
 		setupTempVarHelper("user_id", ".reward");
 		setupTempVarHelper("user_login", ".reward");
 		setupTempVarHelper("user_name", ".reward");
 		setupTempVarHelper("user_input", ".reward");
 		setupTempVarHelper("status", ".reward");
 		setupTempVarHelper("reward", ".reward");
+		setupTempVarHelper("reward.id", ".reward");
+		setupTempVarHelper("reward.title", ".reward");
+		setupTempVarHelper("reward.prompt", ".reward");
+		setupTempVarHelper("reward.cost", ".reward");
 		setupTempVarHelper("redeemed_at", ".reward");
 		break;
 	case Condition::USER_BAN_EVENT:
@@ -1360,6 +1510,18 @@ void MacroConditionTwitch::SetupTempVars()
 		setupTempVarHelper("is_turbo", ".chatReceive");
 		setupTempVarHelper("is_vip", ".chatReceive");
 		break;
+	case Condition::CHAT_MESSAGE_REMOVED:
+		setupTempVarHelper("message", ".chatRemove");
+		setupTempVarHelper("message_id", ".chatRemove");
+		setupTempVarHelper("login", ".chatRemove");
+		setupTempVarHelper("timestamp", ".chatRemove");
+		break;
+	case Condition::CHAT_CLEARED:
+		setupTempVarHelper("ban_duration", ".chatClear");
+		setupTempVarHelper("login", ".chatClear");
+		setupTempVarHelper("user_id", ".chatClear");
+		setupTempVarHelper("timestamp", ".chatClear");
+		break;
 	case Condition::CHAT_USER_JOINED:
 		setupTempVarHelper("user_login", ".chatJoin");
 		break;
@@ -1387,7 +1549,7 @@ MacroConditionTwitchEdit::MacroConditionTwitchEdit(
 	  _tokens(new TwitchConnectionSelection()),
 	  _tokenWarning(new QLabel()),
 	  _channel(new TwitchChannelSelection(this)),
-	  _pointsReward(new TwitchPointsRewardWidget(this)),
+	  _pointsReward(new TwitchPointsRewardWidget(this, true)),
 	  _streamTitle(new VariableLineEdit(this)),
 	  _regexTitle(new RegexConfigWidget(parent)),
 	  _chatMesageEdit(new ChatMessageEdit(this)),
@@ -1425,10 +1587,8 @@ MacroConditionTwitchEdit::MacroConditionTwitchEdit(
 		this,
 		SLOT(ChatMessagePatternChanged(const ChatMessagePattern &)));
 	QWidget::connect(_category,
-			 SIGNAL(CategoreyChanged(const TwitchCategory &)), this,
-			 SLOT(CategoreyChanged(const TwitchCategory &)));
-	QWidget::connect(this, SIGNAL(TempVarsChanged()), window(),
-			 SIGNAL(SegmentTempVarsChanged()));
+			 SIGNAL(CategoryChanged(const TwitchCategory &)), this,
+			 SLOT(CategoryChanged(const TwitchCategory &)));
 	QWidget::connect(_clearBufferOnMatch, SIGNAL(stateChanged(int)), this,
 			 SLOT(ClearBufferOnMatchChanged(int)));
 
@@ -1480,7 +1640,6 @@ void MacroConditionTwitchEdit::ConditionChanged(int idx)
 	_entryData->SetCondition(static_cast<MacroConditionTwitch::Condition>(
 		_conditions->itemData(idx).toInt()));
 	SetWidgetVisibility();
-	emit TempVarsChanged();
 }
 
 void MacroConditionTwitchEdit::TwitchTokenChanged(const QString &token)
@@ -1572,7 +1731,7 @@ void MacroConditionTwitchEdit::RegexTitleChanged(const RegexConfig &conf)
 	updateGeometry();
 }
 
-void MacroConditionTwitchEdit::CategoreyChanged(const TwitchCategory &category)
+void MacroConditionTwitchEdit::CategoryChanged(const TwitchCategory &category)
 {
 	GUARD_LOADING_AND_LOCK();
 	_entryData->_category = category;

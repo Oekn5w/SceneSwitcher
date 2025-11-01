@@ -17,7 +17,7 @@ public:
 		QWidget *parent = nullptr,
 		std::shared_ptr<MacroAction> * = nullptr,
 		const std::string &id = MacroAction::GetDefaultID().data());
-	void UpdateEntryData(const std::string &id);
+	void SetupWidgets(bool basicSetup = false);
 	void SetEntryData(std::shared_ptr<MacroAction> *);
 
 private slots:
@@ -27,14 +27,11 @@ private slots:
 
 private:
 	std::shared_ptr<MacroSegment> Data() const;
-	void SetDisableEffect(bool);
-	void SetEnableAppearance(bool);
 
 	FilterComboBox *_actionSelection;
 	SwitchButton *_enable;
 
 	std::shared_ptr<MacroAction> *_entryData;
-	QTimer _actionStateTimer;
 	bool _loading = true;
 };
 

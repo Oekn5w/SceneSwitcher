@@ -1,8 +1,8 @@
 #include "transform-setting.hpp"
+#include "json-helpers.hpp"
 #include "obs-module-helper.hpp"
 #include "math-helpers.hpp"
 #include "scene-item-transform-helpers.hpp"
-#include "utility.hpp"
 
 #include <nlohmann/json.hpp>
 #include <QLayout>
@@ -295,8 +295,10 @@ TransformSettingSelection::TransformSettingSelection(QWidget *parent)
 
 void TransformSettingSelection::SetSource(obs_scene_item *source)
 {
+	const auto current = _settings->currentData().value<TransformSetting>();
 	_settings->clear();
 	Populate(source);
+	SetSetting(current);
 }
 
 void TransformSettingSelection::SetSetting(const TransformSetting &setting)

@@ -1,7 +1,8 @@
 #include "temp-variable.hpp"
-#include "advanced-scene-switcher.hpp"
 #include "obs-module-helper.hpp"
 #include "macro.hpp"
+#include "macro-action-macro.hpp"
+#include "macro-edit.hpp"
 #include "macro-segment.hpp"
 #include "plugin-state-helpers.hpp"
 #include "ui-helpers.hpp"
@@ -154,20 +155,170 @@ int TempVariableRef::GetIdx() const
 	return segment->GetIndex();
 }
 
-void TempVariableRef::Save(obs_data_t *obj, const char *name) const
+template<typename T>
+static bool
+segmentIsPartOfSegmentList(const MacroSegment *segment,
+			   const std::deque<std::shared_ptr<T>> &segmentList)
+{
+	for (const auto &segmentFromList : segmentList) {
+		if (segment == segmentFromList.get()) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool segmentIsPartOfMacro(const MacroSegment *segment,
+				 const Macro *macro)
+{
+	if (!macro) {
+		return false;
+	}
+
+	return segmentIsPartOfSegmentList(segment, macro->Conditions()) ||
+	       segmentIsPartOfSegmentList(segment, macro->Actions()) ||
+	       segmentIsPartOfSegmentList(segment, macro->ElseActions());
+}
+
+static bool isMatchingNestedMacroAction(MacroAction *action, const Macro *macro)
+{
+	const auto nestedMacroAction = dynamic_cast<MacroActionMacro *>(action);
+	if (!nestedMacroAction) {
+		return false;
+	}
+
+	return nestedMacroAction->_nestedMacro.get() == macro;
+}
+
+static void appendNestedMacros(std::deque<std::shared_ptr<Macro>> &macros,
+			       Macro *macro)
+{
+	if (!macro) {
+		return;
+	}
+
+	for (const auto &action : macro->Actions()) {
+		const auto nestedMacroAction =
+			dynamic_cast<MacroActionMacro *>(action.get());
+		if (nestedMacroAction) {
+			macros.push_back(nestedMacroAction->_nestedMacro);
+			appendNestedMacros(
+				macros, nestedMacroAction->_nestedMacro.get());
+		}
+	}
+	for (const auto &action : macro->ElseActions()) {
+		const auto nestedMacroAction =
+			dynamic_cast<MacroActionMacro *>(action.get());
+		if (nestedMacroAction) {
+			macros.push_back(nestedMacroAction->_nestedMacro);
+			appendNestedMacros(
+				macros, nestedMacroAction->_nestedMacro.get());
+		}
+	}
+}
+
+static Macro *getParentMacro(const Macro *targetMacro,
+			     const std::vector<Macro *> &macros)
+{
+	if (!targetMacro) {
+		return nullptr;
+	}
+
+	if (macros.empty()) {
+		return nullptr;
+	}
+
+	std::vector<Macro *> newMacros;
+	for (const auto &macro : macros) {
+		for (const auto &action : macro->Actions()) {
+			const auto nestedMacroAction =
+				dynamic_cast<MacroActionMacro *>(action.get());
+			if (!nestedMacroAction) {
+				continue;
+			}
+
+			if (nestedMacroAction->_nestedMacro.get() ==
+			    targetMacro) {
+				return nestedMacroAction->GetMacro();
+			}
+
+			newMacros.emplace_back(
+				nestedMacroAction->_nestedMacro.get());
+		}
+		for (const auto &action : macro->ElseActions()) {
+			const auto nestedMacroAction =
+				dynamic_cast<MacroActionMacro *>(action.get());
+			if (!nestedMacroAction) {
+				continue;
+			}
+
+			if (nestedMacroAction->_nestedMacro.get() ==
+			    targetMacro) {
+				return nestedMacroAction->GetMacro();
+			}
+
+			newMacros.emplace_back(
+				nestedMacroAction->_nestedMacro.get());
+		}
+	}
+
+	return getParentMacro(targetMacro, newMacros);
+}
+
+static Macro *getParentMacro(const Macro *macro)
+{
+	std::vector<Macro *> macros;
+	for (const auto &macro : GetMacros()) {
+		macros.emplace_back(macro.get());
+	}
+	return getParentMacro(macro, macros);
+}
+
+static int getDepth(MacroSegment *segment, const Macro *macro, int depth = 0)
+{
+	if (!macro) {
+		return -1;
+	}
+
+	if (segmentIsPartOfMacro(segment, macro)) {
+		return depth;
+	}
+
+	return getDepth(segment, getParentMacro(macro), depth + 1);
+}
+
+void TempVariableRef::Save(obs_data_t *obj, Macro *macro,
+			   const char *name) const
 {
 	OBSDataAutoRelease data = obs_data_create();
 	auto type = GetType();
 	obs_data_set_int(data, "type", static_cast<int>(type));
 	obs_data_set_int(data, "idx", GetIdx());
 	obs_data_set_string(data, "id", _id.c_str());
+	const auto segment = _segment.lock();
+	if (segment) {
+		obs_data_set_int(data, "depth", getDepth(segment.get(), macro));
+	}
 	obs_data_set_int(data, "version", 1);
 	obs_data_set_obj(obj, name, data);
 }
 
-void TempVariableRef::Load(obs_data_t *obj, Macro *macro, const char *name)
+void TempVariableRef::Load(obs_data_t *obj, Macro *macroPtr, const char *name)
 {
-	if (!macro) {
+	std::deque<std::shared_ptr<Macro>> allMacros = GetMacros();
+	for (const auto &topLevelMacro : GetMacros()) {
+		appendNestedMacros(allMacros, topLevelMacro.get());
+	}
+
+	std::weak_ptr<Macro> macro;
+	for (const auto &macroShared : allMacros) {
+		if (macroShared.get() == macroPtr) {
+			macro = macroShared;
+			break;
+		}
+	}
+
+	if (macro.expired()) {
 		_segment.reset();
 		return;
 	}
@@ -176,6 +327,7 @@ void TempVariableRef::Load(obs_data_t *obj, Macro *macro, const char *name)
 	_id = obs_data_get_string(data, "id");
 	const auto type =
 		static_cast<SegmentType>(obs_data_get_int(data, "type"));
+	_depth = obs_data_get_int(data, "depth");
 
 	// Backwards compatibility checks
 	if (obs_data_get_int(data, "version") < 1) {
@@ -189,8 +341,19 @@ void TempVariableRef::Load(obs_data_t *obj, Macro *macro, const char *name)
 	});
 }
 
-void TempVariableRef::PostLoad(int idx, SegmentType type, Macro *macro)
+void TempVariableRef::PostLoad(int idx, SegmentType type,
+			       const std::weak_ptr<Macro> &weakMacro)
 {
+	auto childMacro = weakMacro.lock();
+	if (!childMacro) {
+		return;
+	}
+
+	auto macro = childMacro.get();
+	for (int i = 0; i < _depth; i++) {
+		macro = getParentMacro(childMacro.get());
+	}
+
 	if (!macro) {
 		return;
 	}
@@ -247,20 +410,35 @@ bool TempVariableRef::operator==(const TempVariableRef &other) const
 	return segment == other._segment.lock();
 }
 
+static MacroEdit *findMacroEditParent(QWidget *widget)
+{
+	if (!widget) {
+		return nullptr;
+	}
+
+	auto macroEdit = qobject_cast<MacroEdit *>(widget);
+	if (macroEdit) {
+		return macroEdit;
+	}
+
+	return findMacroEditParent(widget->parentWidget());
+}
+
 TempVariableSelection::TempVariableSelection(QWidget *parent)
 	: QWidget(parent),
 	  _selection(new FilterComboBox(
 		  this, obs_module_text("AdvSceneSwitcher.tempVar.select"))),
-	  _info(new AutoUpdateTooltipLabel(this, [this]() {
-		  return SetupInfoLabel();
-	  }))
+	  _info(new AutoUpdateHelpIcon(this,
+				       [this]() { return SetupInfoLabel(); }))
+
 {
-	QString path = GetThemeTypeName() == "Light"
-			       ? ":/res/images/help.svg"
-			       : ":/res/images/help_light.svg";
-	QIcon icon(path);
-	QPixmap pixmap = icon.pixmap(QSize(16, 16));
-	_info->setPixmap(pixmap);
+	MacroEdit *edit = findMacroEditParent(parent);
+	assert(edit);
+	_macroEdits.push_back(edit);
+	while ((edit = findMacroEditParent(edit->parentWidget()))) {
+		_macroEdits.push_back(edit);
+	}
+
 	_info->hide();
 
 	_selection->setSizeAdjustPolicy(QComboBox::AdjustToContents);
@@ -272,10 +450,13 @@ TempVariableSelection::TempVariableSelection(QWidget *parent)
 			 SLOT(SelectionIdxChanged(int)));
 	QWidget::connect(_selection, SIGNAL(highlighted(int)), this,
 			 SLOT(HighlightChanged(int)));
-	QWidget::connect(window(), SIGNAL(MacroSegmentOrderChanged()), this,
-			 SLOT(MacroSegmentsChanged()));
-	QWidget::connect(window(), SIGNAL(SegmentTempVarsChanged()), this,
-			 SLOT(SegmentTempVarsChanged()));
+	for (const auto macroEdit : _macroEdits) {
+		QWidget::connect(macroEdit, SIGNAL(MacroSegmentOrderChanged()),
+				 this, SLOT(MacroSegmentsChanged()));
+	}
+	QWidget::connect(TempVarSignalManager::Instance(),
+			 SIGNAL(SegmentTempVarsChanged(MacroSegment *)), this,
+			 SLOT(SegmentTempVarsChanged(MacroSegment *)));
 
 	auto layout = new QHBoxLayout();
 	layout->setContentsMargins(0, 0, 0, 0);
@@ -314,9 +495,15 @@ void TempVariableSelection::MacroSegmentsChanged()
 	SetVariable(currentSelection);
 }
 
-void TempVariableSelection::SegmentTempVarsChanged()
+void TempVariableSelection::SegmentTempVarsChanged(MacroSegment *segment)
 {
-	MacroSegmentsChanged();
+	const auto currentSegment = GetSegment();
+	const auto currentMacro = currentSegment ? currentSegment->GetMacro()
+						 : nullptr;
+	const auto changeMacro = segment ? segment->GetMacro() : nullptr;
+	if (currentMacro == changeMacro) {
+		MacroSegmentsChanged();
+	}
 }
 
 void TempVariableSelection::HighlightChanged(int idx)
@@ -325,19 +512,57 @@ void TempVariableSelection::HighlightChanged(int idx)
 	HighlightSelection(var);
 }
 
+static MacroSegment *
+getMacroSegmentFromNestedMacro(Macro *nestedMacro,
+			       const std::vector<MacroEdit *> &macroEdits)
+{
+	for (const auto &macroEdit : macroEdits) {
+		const auto macro = macroEdit->GetMacro();
+		if (!macro) {
+			continue;
+		}
+		for (const auto &action : macro->Actions()) {
+			if (isMatchingNestedMacroAction(action.get(),
+							nestedMacro)) {
+				return action.get();
+			}
+		}
+		for (const auto &action : macro->ElseActions()) {
+			if (isMatchingNestedMacroAction(action.get(),
+							nestedMacro)) {
+				return action.get();
+			}
+		}
+	}
+	return nullptr;
+}
+
 void TempVariableSelection::PopulateSelection()
 {
-	auto advssWindow = qobject_cast<AdvSceneSwitcher *>(window());
-	if (!advssWindow) {
+	std::vector<TempVariable> vars;
+	const auto appendVars = [&vars](const Macro *macro,
+					const MacroSegment *segment) {
+		const auto newVars = macro->GetTempVars(segment);
+		vars.insert(vars.end(), newVars.begin(), newVars.end());
+	};
+
+	const auto segment = GetSegment();
+	if (!segment) {
 		return;
 	}
 
-	auto macro = advssWindow->GetSelectedMacro();
-	if (!macro) {
+	auto macro = segment->GetMacro();
+	appendVars(macro, segment);
+
+	while ((macro = getParentMacro(macro))) {
+		appendVars(macro,
+			   getMacroSegmentFromNestedMacro(macro, _macroEdits));
+	}
+
+	if (vars.empty()) {
 		return;
 	}
 
-	auto vars = macro->GetTempVars(GetSegment());
 	for (const auto &var : vars) {
 		QVariant variant;
 		variant.setValue(var.GetRef());
@@ -358,25 +583,49 @@ void TempVariableSelection::PopulateSelection()
 	updateGeometry();
 }
 
+static MacroEdit *
+getMacroEditFromMacro(const std::vector<MacroEdit *> &macroEdits, Macro *macro)
+{
+	for (const auto edit : macroEdits) {
+		if (macro == edit->GetMacro().get()) {
+			return edit;
+		}
+	}
+
+	return nullptr;
+}
+
 void TempVariableSelection::HighlightSelection(const TempVariableRef &var)
 {
-	auto advssWindow = qobject_cast<AdvSceneSwitcher *>(window());
-	if (!advssWindow) {
+	const auto segment = var._segment.lock();
+	if (!segment) {
 		return;
 	}
+
+	const auto macro = segment->GetMacro();
+	if (!macro) {
+		return;
+	}
+
+	const MacroEdit *macroEdit = getMacroEditFromMacro(_macroEdits, macro);
+	if (!macroEdit) {
+		return;
+	}
+
+	const auto color = GetThemeTypeName() == "Dark" ? Qt::white : Qt::blue;
 
 	auto type = var.GetType();
 	switch (type) {
 	case TempVariableRef::SegmentType::NONE:
 		return;
 	case TempVariableRef::SegmentType::CONDITION:
-		advssWindow->HighlightCondition(var.GetIdx(), Qt::white);
+		macroEdit->HighlightCondition(var.GetIdx(), color);
 		return;
 	case TempVariableRef::SegmentType::ACTION:
-		advssWindow->HighlightAction(var.GetIdx(), Qt::white);
+		macroEdit->HighlightAction(var.GetIdx(), color);
 		return;
 	case TempVariableRef::SegmentType::ELSEACTION:
-		advssWindow->HighlightElseAction(var.GetIdx(), Qt::white);
+		macroEdit->HighlightElseAction(var.GetIdx(), color);
 		return;
 	default:
 		break;
@@ -387,19 +636,20 @@ QString TempVariableSelection::SetupInfoLabel()
 {
 	auto currentSelection = _selection->itemData(_selection->currentIndex())
 					.value<TempVariableRef>();
-	auto advssWindow = qobject_cast<AdvSceneSwitcher *>(window());
-	if (!advssWindow) {
+	const auto segment = currentSelection._segment.lock();
+	if (!segment) {
 		_info->setToolTip("");
 		_info->hide();
 		return "";
 	}
-	auto macro = advssWindow->GetSelectedMacro();
+
+	auto macro = segment->GetMacro();
 	if (!macro) {
 		_info->setToolTip("");
 		_info->hide();
 		return "";
 	}
-	auto var = currentSelection.GetTempVariable(macro.get());
+	auto var = currentSelection.GetTempVariable(macro);
 	if (!var) {
 		_info->setToolTip("");
 		_info->hide();
@@ -427,13 +677,11 @@ QString TempVariableSelection::SetupInfoLabel()
 MacroSegment *TempVariableSelection::GetSegment() const
 {
 	const QWidget *widget = this;
-	{
-		while (widget) {
-			if (qobject_cast<const MacroSegmentEdit *>(widget)) {
-				break;
-			}
-			widget = widget->parentWidget();
+	while (widget) {
+		if (qobject_cast<const MacroSegmentEdit *>(widget)) {
+			break;
 		}
+		widget = widget->parentWidget();
 	}
 	if (!widget) {
 		return nullptr;
@@ -442,17 +690,23 @@ MacroSegment *TempVariableSelection::GetSegment() const
 	return segmentWidget->Data().get();
 }
 
-void NotifyUIAboutTempVarChange()
+TempVarSignalManager::TempVarSignalManager() : QObject() {}
+
+TempVarSignalManager *TempVarSignalManager::Instance()
+{
+	static TempVarSignalManager manager;
+	return &manager;
+}
+
+void NotifyUIAboutTempVarChange(MacroSegment *segment)
 {
 	obs_queue_task(
 		OBS_TASK_UI,
-		[](void *) {
-			if (!SettingsWindowIsOpened()) {
-				return;
-			}
-			AdvSceneSwitcher::window->SegmentTempVarsChanged();
+		[](void *segment) {
+			TempVarSignalManager::Instance()->SegmentTempVarsChanged(
+				(MacroSegment *)segment);
 		},
-		nullptr, false);
+		segment, false);
 }
 
 } // namespace advss

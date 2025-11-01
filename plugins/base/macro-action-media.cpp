@@ -219,6 +219,13 @@ static inline void populateSelectionTypeSelection(QComboBox *list)
 	}
 }
 
+static QStringList getMediaSourcesList()
+{
+	auto sources = GetMediaSourceNames();
+	sources.sort();
+	return sources;
+}
+
 MacroActionMediaEdit::MacroActionMediaEdit(
 	QWidget *parent, std::shared_ptr<MacroActionMedia> entryData)
 	: QWidget(parent),
@@ -229,15 +236,29 @@ MacroActionMediaEdit::MacroActionMediaEdit(
 		  0, 100,
 		  obs_module_text(
 			  "AdvSceneSwitcher.action.media.seek.percentage.label"))),
-	  _sources(new SourceSelectionWidget(this, QStringList(), true)),
-	  _sceneItems(new SceneItemSelectionWidget(parent, false)),
+	  _sources(new SourceSelectionWidget(this, getMediaSourcesList, true)),
+	  _sceneItems(new SceneItemSelectionWidget(
+		  parent,
+		  {
+			  SceneItemSelection::Type::SOURCE_NAME,
+			  SceneItemSelection::Type::VARIABLE_NAME,
+			  SceneItemSelection::Type::SOURCE_NAME_PATTERN,
+			  SceneItemSelection::Type::SOURCE_GROUP,
+			  SceneItemSelection::Type::SOURCE_TYPE,
+			  SceneItemSelection::Type::INDEX,
+			  SceneItemSelection::Type::INDEX_RANGE,
+			  SceneItemSelection::Type::ALL,
+		  },
+		  // All instances of a media source will be in the same state.
+		  // So, for example, restarting one instance of a source will
+		  // automatically restart all other instances of that source,
+		  // too.
+		  // Thus, we hide the name clash resolution options
+		  SceneItemSelectionWidget::NameClashMode::HIDE)),
 	  _scenes(new SceneSelectionWidget(this, true, false, true, true, true))
 {
 	populateActionSelection(_actions);
 	populateSelectionTypeSelection(_selectionTypes);
-	auto sources = GetMediaSourceNames();
-	sources.sort();
-	_sources->SetSourceNameList(sources);
 
 	QWidget::connect(_actions, SIGNAL(currentIndexChanged(int)), this,
 			 SLOT(ActionChanged(int)));
@@ -282,22 +303,14 @@ MacroActionMediaEdit::MacroActionMediaEdit(
 
 void MacroActionMediaEdit::ActionChanged(int value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_action = static_cast<MacroActionMedia::Action>(value);
 	SetWidgetVisibility();
 }
 
 void MacroActionMediaEdit::SelectionTypeChanged(int value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_selection =
 		static_cast<MacroActionMedia::SelectionType>(value);
 	SetWidgetVisibility();
@@ -305,32 +318,20 @@ void MacroActionMediaEdit::SelectionTypeChanged(int value)
 
 void MacroActionMediaEdit::SeekDurationChanged(const Duration &seekDuration)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_seekDuration = seekDuration;
 }
 
 void MacroActionMediaEdit::SeekPercentageChanged(
 	const NumberVariable<double> &seekPercentage)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_seekPercentage = seekPercentage;
 }
 
 void MacroActionMediaEdit::SourceChanged(const SourceSelection &source)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_mediaSource = source;
 	emit HeaderInfoChanged(
 		QString::fromStdString(_entryData->GetShortDesc()));
@@ -338,11 +339,7 @@ void MacroActionMediaEdit::SourceChanged(const SourceSelection &source)
 
 void MacroActionMediaEdit::SourceChanged(const SceneItemSelection &item)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_sceneItem = item;
 	emit HeaderInfoChanged(
 		QString::fromStdString(_entryData->GetShortDesc()));
@@ -352,11 +349,7 @@ void MacroActionMediaEdit::SourceChanged(const SceneItemSelection &item)
 
 void MacroActionMediaEdit::SceneChanged(const SceneSelection &scene)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_scene = scene;
 	emit HeaderInfoChanged(
 		QString::fromStdString(_entryData->GetShortDesc()));

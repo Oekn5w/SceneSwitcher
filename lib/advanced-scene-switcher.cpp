@@ -1,6 +1,5 @@
 #include "advanced-scene-switcher.hpp"
 #include "backup.hpp"
-#include "curl-helper.hpp"
 #include "log-helper.hpp"
 #include "macro-helpers.hpp"
 #include "obs-module-helper.hpp"
@@ -19,9 +18,14 @@
 #include <obs-frontend-api.h>
 #include <QAction>
 #include <QDirIterator>
+#include <QLibrary>
 #include <QMainWindow>
 #include <QTextStream>
 #include <regex>
+
+#ifdef _WIN32
+#include <Windows.h>
+#endif
 
 namespace advss {
 
@@ -142,16 +146,7 @@ void AdvSceneSwitcher::LoadUI()
 bool AdvSceneSwitcher::eventFilter(QObject *obj, QEvent *event)
 {
 	auto eventType = event->type();
-	if (obj == ui->macroElseActions && eventType == QEvent::Resize) {
-		QResizeEvent *resizeEvent = static_cast<QResizeEvent *>(event);
-
-		if (resizeEvent->size().height() == 0) {
-			SetElseActionsStateToHidden();
-			return QDialog::eventFilter(obj, event);
-		}
-
-		SetElseActionsStateToVisible();
-	} else if (eventType == QEvent::KeyPress) {
+	if (eventType == QEvent::KeyPress) {
 		QKeyEvent *keyEvent = static_cast<QKeyEvent *>(event);
 		auto pressedKey = keyEvent->key();
 
@@ -307,7 +302,7 @@ void SwitcherData::Thread()
 			}
 		}
 
-		ResetForNextInterval();
+		RunIntervalResetSteps();
 
 		if (match) {
 			if (macroMatch) {
@@ -355,14 +350,6 @@ void SwitcherData::SetPreconditions()
 
 	// Macro
 	InvalidateMacroTempVarValues();
-}
-
-void SwitcherData::ResetForNextInterval()
-{
-	// Plugin reset functions
-	for (const auto &func : resetIntervalSteps) {
-		func();
-	}
 }
 
 bool SwitcherData::CheckForMatch(OBSWeakSource &scene,
@@ -445,7 +432,7 @@ void AutoStartActionQueues();
 void SwitcherData::Start()
 {
 	if (!(th && th->isRunning())) {
-		ResetForNextInterval();
+		RunIntervalResetSteps();
 		ResetMacros();
 		AutoStartActionQueues();
 
@@ -453,10 +440,7 @@ void SwitcherData::Start()
 		th = new SwitcherThread();
 		th->start((QThread::Priority)threadPriority);
 
-		// Will be overwritten quickly but might be useful
-		writeToStatusFile("Advanced Scene Switcher running");
-		SendWebsocketVendorEvent("AdvancedSceneSwitcherStarted",
-					 nullptr);
+		RunStartSteps();
 	}
 
 	if (showSystemTrayNotifications) {
@@ -483,11 +467,7 @@ void SwitcherData::Stop()
 		th->wait();
 		delete th;
 		th = nullptr;
-		writeToStatusFile("Advanced Scene Switcher stopped");
-		if (!obsIsShuttingDown) {
-			SendWebsocketVendorEvent("AdvancedSceneSwitcherStopped",
-						 nullptr);
-		}
+		RunStopSteps();
 	}
 
 	if (showSystemTrayNotifications) {
@@ -558,6 +538,7 @@ static void handleSceneChange()
 	}
 
 	switcher->checkDefaultSceneTransitions();
+	switcher->CheckAutoStart();
 }
 
 static void setLiveTime()
@@ -572,18 +553,28 @@ static void resetLiveTime()
 
 static void checkAutoStartRecording()
 {
+	if (switcher->obsIsShuttingDown) {
+		return;
+	}
+
 	if (switcher->autoStartEvent == SwitcherData::AutoStart::RECORDING ||
 	    switcher->autoStartEvent ==
-		    SwitcherData::AutoStart::RECORINDG_OR_STREAMING)
+		    SwitcherData::AutoStart::RECORINDG_OR_STREAMING) {
 		switcher->Start();
+	}
 }
 
 static void checkAutoStartStreaming()
 {
+	if (switcher->obsIsShuttingDown) {
+		return;
+	}
+
 	if (switcher->autoStartEvent == SwitcherData::AutoStart::STREAMING ||
 	    switcher->autoStartEvent ==
-		    SwitcherData::AutoStart::RECORINDG_OR_STREAMING)
+		    SwitcherData::AutoStart::RECORINDG_OR_STREAMING) {
 		switcher->Start();
+	}
 }
 
 static void handleTransitionEnd()
@@ -619,7 +610,7 @@ static void handleSceneCollectionChanging()
 		AdvSceneSwitcher::window->close();
 	}
 	if (!switcher->stop) {
-		switcher->sceneColletionStop = true;
+		switcher->sceneCollectionStop = true;
 		switcher->Stop();
 	}
 }
@@ -735,7 +726,7 @@ void OpenSettingsWindow()
 	}
 }
 
-void AdvSceneSwitcher::HighligthMacroSettingsButton(bool enable)
+void AdvSceneSwitcher::HighlightMacroSettingsButton(bool enable)
 {
 	static QObject *highlight = nullptr;
 	if ((highlight && enable) || (!highlight && !enable)) {
@@ -755,13 +746,28 @@ void AdvSceneSwitcher::HighligthMacroSettingsButton(bool enable)
 	highlight = HighlightWidget(ui->macroSettings, Qt::green);
 }
 
-void HighligthMacroSettingsButton(bool enable)
+void AdvSceneSwitcher::HighlightAction(int idx, QColor color) const
+{
+	ui->macroEdit->HighlightAction(idx, color);
+}
+
+void AdvSceneSwitcher::HighlightElseAction(int idx, QColor color) const
+{
+	ui->macroEdit->HighlightElseAction(idx, color);
+}
+
+void AdvSceneSwitcher::HighlightCondition(int idx, QColor color) const
+{
+	ui->macroEdit->HighlightCondition(idx, color);
+}
+
+void HighlightMacroSettingsButton(bool enable)
 {
 	auto window = GetSettingsWindow();
 	if (!window) {
 		return;
 	}
-	static_cast<AdvSceneSwitcher *>(window)->HighligthMacroSettingsButton(
+	static_cast<AdvSceneSwitcher *>(window)->HighlightMacroSettingsButton(
 		enable);
 }
 

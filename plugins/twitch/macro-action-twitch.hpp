@@ -4,7 +4,10 @@
 #include "category-selection.hpp"
 #include "channel-selection.hpp"
 #include "chat-connection.hpp"
+#include "content-classification.hpp"
+#include "language-selection.hpp"
 #include "points-reward-selection.hpp"
+#include "tag-selection.hpp"
 
 #include <variable-line-edit.hpp>
 #include <variable-text-edit.hpp>
@@ -27,8 +30,8 @@ public:
 		CHANNEL_INFO_CATEGORY_SET = 20,
 		CHANNEL_INFO_LANGUAGE_SET = 30,
 		CHANNEL_INFO_DELAY_SET = 40,
-		CHANNEL_INFO_TAGS_SET = 50,           // TODO
-		CHANNEL_INFO_CONTENT_LABELS_SET = 60, // TODO
+		CHANNEL_INFO_TAGS_SET = 50,
+		CHANNEL_INFO_CONTENT_LABELS_SET = 60,
 		CHANNEL_INFO_BRANDED_CONTENT_ENABLE = 70,
 		CHANNEL_INFO_BRANDED_CONTENT_DISABLE = 71,
 
@@ -53,6 +56,9 @@ public:
 
 		// Reward add
 		POINTS_REWARD_ADD = 600, // TODO
+
+		// Get reward information
+		POINTS_REWARD_GET_INFO = 650,
 
 		// Reward update
 		POINTS_REWARD_ENABLE = 710,
@@ -134,6 +140,9 @@ public:
 		CHANNEL_SCHEDULE_SEGMENT_DELETE = 3500, // TODO
 
 		SEND_CHAT_MESSAGE = 5000,
+
+		// Get user info
+		USER_GET_INFO = 6000
 	};
 
 	enum class AnnouncementColor {
@@ -145,6 +154,8 @@ public:
 	};
 
 	enum class RedemptionStatus { CANCELED, FULFILLED };
+
+	enum class UserInfoQueryType { ID, LOGIN };
 
 	bool PerformAction();
 	void LogAction() const;
@@ -160,6 +171,9 @@ public:
 	StringVariable _streamTitle =
 		obs_module_text("AdvSceneSwitcher.action.twitch.title.title");
 	TwitchCategory _category;
+	TwitchTagList _tags;
+	LanguageSelection _language;
+	ContentClassification _contentClassification;
 	StringVariable _markerDescription = obs_module_text(
 		"AdvSceneSwitcher.action.twitch.marker.description");
 	bool _clipHasDelay = false;
@@ -169,6 +183,12 @@ public:
 	AnnouncementColor _announcementColor = AnnouncementColor::PRIMARY;
 	TwitchChannel _channel;
 	StringVariable _chatMessage;
+	UserInfoQueryType _userInfoQueryType = UserInfoQueryType::LOGIN;
+	StringVariable _userLogin = "user login";
+	DoubleVariable _userId = 0;
+	TwitchPointsReward _pointsReward;
+	std::weak_ptr<Variable> _rewardVariable;
+	bool _useVariableForRewardSelection = false;
 
 private:
 	void SetStreamTitle(const std::shared_ptr<TwitchToken> &) const;
@@ -181,9 +201,19 @@ private:
 				  bool enable) const;
 	void StartRaid(const std::shared_ptr<TwitchToken> &);
 	void SendChatMessage(const std::shared_ptr<TwitchToken> &);
+	void GetUserInfo(const std::shared_ptr<TwitchToken> &);
+	void GetRewardInfo(const std::shared_ptr<TwitchToken> &);
+
+	bool ResolveVariableSelectionToRewardId(
+		const std::shared_ptr<TwitchToken> &);
+
+	void SetupTempVars();
 
 	Action _action = Action::CHANNEL_INFO_TITLE_SET;
 	std::shared_ptr<TwitchChatConnection> _chatConnection;
+
+	std::string _lastResolvedRewardTitle;
+	std::string _lastResolvedRewardId;
 
 	static bool _registered;
 	static const std::string id;
@@ -210,7 +240,10 @@ private slots:
 	void TwitchTokenChanged(const QString &);
 	void CheckToken();
 	void StreamTitleChanged();
-	void CategoreyChanged(const TwitchCategory &);
+	void CategoryChanged(const TwitchCategory &);
+	void TagsChanged(const TwitchTagList &tags);
+	void LanguageChanged(const LanguageSelection &);
+	void ContentClassificationChanged(const ContentClassification &ccl);
 	void MarkerDescriptionChanged();
 	void ClipHasDelayChanged(int state);
 	void DurationChanged(const Duration &);
@@ -218,6 +251,12 @@ private slots:
 	void AnnouncementColorChanged(int index);
 	void ChannelChanged(const TwitchChannel &);
 	void ChatMessageChanged();
+	void UserInfoQueryTypeChanged(int);
+	void UserLoginChanged();
+	void UserIdChanged(const NumberVariable<double> &);
+	void PointsRewardChanged(const TwitchPointsReward &);
+	void RewardVariableChanged(const QString &);
+	void ToggleRewardSelection(bool);
 
 signals:
 	void HeaderInfoChanged(const QString &);
@@ -239,6 +278,9 @@ private:
 	QTimer _tokenCheckTimer;
 	VariableLineEdit *_streamTitle;
 	TwitchCategoryWidget *_category;
+	TagListWidget *_tags;
+	LanguageSelectionWidget *_language;
+	ContentClassificationEdit *_contentClassification;
 	VariableLineEdit *_markerDescription;
 	QCheckBox *_clipHasDelay;
 	DurationSelection *_duration;
@@ -246,6 +288,14 @@ private:
 	QComboBox *_announcementColor;
 	TwitchChannelSelection *_channel;
 	VariableTextEdit *_chatMessage;
+	QComboBox *_userInfoQueryType;
+	VariableLineEdit *_userLogin;
+	// QSpinBox uses int internally, which is too small for Twitch IDs, so
+	// we use QDoubleSpinBox instead
+	VariableDoubleSpinBox *_userId;
+	TwitchPointsRewardWidget *_pointsReward;
+	VariableSelection *_rewardVariable;
+	QPushButton *_toggleRewardSelection;
 
 	bool _loading = true;
 };

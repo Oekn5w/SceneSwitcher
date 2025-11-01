@@ -76,8 +76,8 @@ MacroActionSystrayEdit::MacroActionSystrayEdit(
 	  _message(new VariableLineEdit(this)),
 	  _title(new VariableLineEdit(this)),
 	  _iconPath(new FileSelection()),
-	  _trayDisableWarning(
-		  new QLabel("AdvSceneSwitcher.action.systray.disabled"))
+	  _trayDisableWarning(new QLabel(
+		  obs_module_text("AdvSceneSwitcher.action.systray.disabled")))
 {
 	_iconPath->setToolTip(
 		obs_module_text("AdvSceneSwitcher.action.systray.iconHint"));
@@ -152,11 +152,7 @@ void MacroActionSystrayEdit::CheckIfTrayIsDisabled()
 
 void MacroActionSystrayEdit::MessageChanged()
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_message = _message->text().toStdString();
 }
 

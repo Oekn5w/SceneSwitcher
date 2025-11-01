@@ -10,14 +10,17 @@
 
 #include <obs-frontend-api.h>
 
+#include <QLayout>
+
 namespace advss {
 
 constexpr std::string_view typeSaveName = "type";
 constexpr std::string_view nameSaveName = "name";
+constexpr std::string_view canvasSaveName = "canvasSelection";
 
 void SceneSelection::Save(obs_data_t *obj, const char *name) const
 {
-	auto data = obs_data_create();
+	OBSDataAutoRelease data = obs_data_create();
 	obs_data_set_int(data, typeSaveName.data(), static_cast<int>(_type));
 	switch (_type) {
 	case Type::SCENE:
@@ -40,18 +43,51 @@ void SceneSelection::Save(obs_data_t *obj, const char *name) const
 	default:
 		break;
 	}
+	obs_data_set_string(data, canvasSaveName.data(),
+			    GetWeakCanvasName(_canvas).c_str());
 	obs_data_set_obj(obj, name, data);
-	obs_data_release(data);
+}
+
+static OBSWeakSource getWeakSceneSourceByName(const OBSWeakCanvas &weakCanvas,
+					      const char *name)
+{
+#if LIBOBS_API_VER < MAKE_SEMANTIC_VERSION(31, 1, 0)
+	return GetWeakSourceByName(name);
+#else
+	if (!weakCanvas) {
+		return nullptr;
+	}
+
+	OBSCanvasAutoRelease canvas = obs_weak_canvas_get_canvas(weakCanvas);
+	if (!canvas) {
+		return nullptr;
+	}
+
+	OBSSourceAutoRelease source =
+		obs_canvas_get_source_by_name(canvas, name);
+	OBSWeakSource scene = OBSGetWeakRef(source);
+	return scene;
+#endif
 }
 
 void SceneSelection::Load(obs_data_t *obj, const char *name)
 {
-	auto data = obs_data_get_obj(obj, name);
+	OBSDataAutoRelease data = obs_data_get_obj(obj, name);
+
+	if (obs_data_has_user_value(data, canvasSaveName.data())) {
+		_canvas = GetWeakCanvasByName(
+			obs_data_get_string(data, canvasSaveName.data()));
+	} else {
+		OBSCanvasAutoRelease mainCanvas = obs_get_main_canvas();
+		_canvas = obs_canvas_get_weak_canvas(mainCanvas);
+		obs_weak_canvas_release(_canvas);
+	}
+
 	_type = static_cast<Type>(obs_data_get_int(data, typeSaveName.data()));
 	auto targetName = obs_data_get_string(data, nameSaveName.data());
 	switch (_type) {
 	case Type::SCENE:
-		_scene = GetWeakSourceByName(targetName);
+		_scene = getWeakSceneSourceByName(_canvas, targetName);
 		break;
 	case Type::GROUP:
 		_group = GetSceneGroupByName(targetName);
@@ -68,15 +104,18 @@ void SceneSelection::Load(obs_data_t *obj, const char *name)
 	default:
 		break;
 	}
-	obs_data_release(data);
 }
 
-static bool IsScene(const OBSWeakSource &source)
+static bool isScene(const OBSWeakSource &source)
 {
-	auto s = obs_weak_source_get_source(source);
-	bool ret = !!obs_scene_from_source(s);
-	obs_source_release(s);
-	return ret;
+	OBSSourceAutoRelease s = obs_weak_source_get_source(source);
+	return !!obs_scene_from_source(s);
+}
+
+void SceneSelection::SetScene(const OBSWeakSource &scene)
+{
+	_type = Type::SCENE;
+	_scene = scene;
 }
 
 OBSWeakSource SceneSelection::GetScene(bool advance) const
@@ -93,23 +132,30 @@ OBSWeakSource SceneSelection::GetScene(bool advance) const
 		}
 		return _group->getCurrentScene();
 	case Type::PREVIOUS:
+		if (!IsMainCanvas(_canvas)) {
+			return nullptr;
+		}
 		return GetPreviousScene();
 	case Type::CURRENT:
-		return GetCurrentScene();
+		if (IsMainCanvas(_canvas)) {
+			return GetCurrentScene();
+		} else {
+			return GetActiveCanvasScene(_canvas);
+		}
 	case Type::PREVIEW: {
-		auto s = obs_frontend_get_current_preview_scene();
-		auto scene = obs_source_get_weak_source(s);
-		obs_weak_source_release(scene);
-		obs_source_release(s);
-		return scene;
+		OBSSourceAutoRelease s =
+			obs_frontend_get_current_preview_scene();
+		OBSWeakSourceAutoRelease scene = obs_source_get_weak_source(s);
+		return scene.Get();
 	}
 	case Type::VARIABLE: {
 		auto var = _variable.lock();
 		if (!var) {
 			return nullptr;
 		}
-		auto scene = GetWeakSourceByName(var->Value().c_str());
-		if (IsScene(scene)) {
+		auto scene =
+			getWeakSceneSourceByName(_canvas, var->Value().c_str());
+		if (isScene(scene)) {
 			return scene;
 		}
 		return nullptr;
@@ -164,11 +210,30 @@ void SceneSelection::ResolveVariables()
 	_type = Type::SCENE;
 }
 
+static obs_weak_canvas_t *getWeakRefToMainCanvas()
+{
+	static auto canvas = obs_get_main_canvas();
+	static auto weakCanvas = obs_canvas_get_weak_canvas(canvas);
+	[[maybe_unused]] static const bool _ = []() {
+		// Let's just hope we don't have to deal with selecting scenes
+		// when the OBS main canvas gets deleted and release the
+		// references here already to avoid reporting leaks on shutdown
+		obs_canvas_release(canvas);
+		obs_weak_canvas_release(weakCanvas);
+		return true;
+	}();
+	return weakCanvas;
+}
+
 SceneSelection SceneSelectionWidget::CurrentSelection()
 {
 	SceneSelection s;
-	const int idx = currentIndex();
-	const auto name = currentText();
+
+	s._canvas = _forceMainCanvas ? OBSWeakCanvas(getWeakRefToMainCanvas())
+				     : _canvas->GetCanvas();
+
+	const int idx = _scenes->currentIndex();
+	const auto name = _scenes->currentText();
 	if (idx == -1 || name.isEmpty()) {
 		return s;
 	}
@@ -191,7 +256,8 @@ SceneSelection SceneSelectionWidget::CurrentSelection()
 		s._group = GetSceneGroupByQString(name);
 	} else if (idx < _scenesEndIdx) {
 		s._type = SceneSelection::Type::SCENE;
-		s._scene = GetWeakSourceByQString(name);
+		s._scene = getWeakSceneSourceByName(s._canvas,
+						    name.toStdString().c_str());
 	}
 	return s;
 }
@@ -211,20 +277,6 @@ static QStringList getOrderList(bool current, bool previous, bool preview)
 	return list;
 }
 
-static QStringList getScenesList()
-{
-	QStringList list;
-	char **scenes = obs_frontend_get_scene_names();
-	char **temp = scenes;
-	while (*temp) {
-		const char *name = *temp;
-		list << name;
-		temp++;
-	}
-	bfree(scenes);
-	return list;
-}
-
 static QStringList getSceneGroupsList()
 {
 	QStringList list;
@@ -235,70 +287,96 @@ static QStringList getSceneGroupsList()
 	return list;
 }
 
+static QStringList getCanvasScenesList(obs_weak_canvas_t *weakCanvas)
+{
+#if LIBOBS_API_VER >= MAKE_SEMANTIC_VERSION(31, 1, 0)
+	if (!weakCanvas) {
+		return {};
+	}
+#endif
+
+	OBSCanvasAutoRelease canvas = obs_weak_canvas_get_canvas(weakCanvas);
+	static const auto enumCanvasScenes = [](void *listPtr,
+						obs_source_t *source) -> bool {
+		auto list = static_cast<QStringList *>(listPtr);
+		*list << obs_source_get_name(source);
+		return true;
+	};
+
+	QStringList list;
+	obs_canvas_enum_scenes(canvas, enumCanvasScenes, &list);
+	return list;
+}
+
 void SceneSelectionWidget::Reset()
 {
 	auto previousSel = _currentSelection;
-	PopulateSelection();
+	PopulateSceneSelection(_currentSelection._canvas);
 	SetScene(previousSel);
 }
 
-void SceneSelectionWidget::PopulateSelection()
+void SceneSelectionWidget::PopulateSceneSelection(obs_weak_canvas_t *canvas)
 {
-	clear();
-	if (_current || _previous) {
-		const QStringList order =
-			getOrderList(_current, _previous, _preview);
-		AddSelectionGroup(this, order);
+	if (_forceMainCanvas) {
+		canvas = getWeakRefToMainCanvas();
 	}
-	_placeholderEndIdx = count();
+
+	_scenes->clear();
+	if ((_current || _previous)) {
+		const bool isMain = IsMainCanvas(canvas);
+		const QStringList order = getOrderList(
+			_current, _previous && isMain, _preview && isMain);
+		AddSelectionGroup(_scenes, order);
+	}
+	_placeholderEndIdx = _scenes->count();
 
 	if (_variables) {
 		const QStringList variables = GetVariablesNameList();
-		AddSelectionGroup(this, variables);
+		AddSelectionGroup(_scenes, variables);
 	}
-	_variablesEndIdx = count();
+	_variablesEndIdx = _scenes->count();
 
 	if (_sceneGroups) {
 		const QStringList sceneGroups = getSceneGroupsList();
-		AddSelectionGroup(this, sceneGroups);
+		AddSelectionGroup(_scenes, sceneGroups);
 	}
-	_groupsEndIdx = count();
+	_groupsEndIdx = _scenes->count();
 
-	const QStringList scenes = getScenesList();
-	AddSelectionGroup(this, scenes);
-	_scenesEndIdx = count();
+	const QStringList scenes = getCanvasScenesList(canvas);
+	AddSelectionGroup(_scenes, scenes);
+	_scenesEndIdx = _scenes->count();
 
 	// Remove last separator
-	removeItem(count() - 1);
-	setCurrentIndex(-1);
+	_scenes->removeItem(_scenes->count() - 1);
+	_scenes->setCurrentIndex(-1);
+
+	_isPopulated = true;
+
+	Resize();
 }
 
 SceneSelectionWidget::SceneSelectionWidget(QWidget *parent, bool variables,
 					   bool sceneGroups, bool previous,
 					   bool current, bool preview)
-	: FilterComboBox(parent,
-			 obs_module_text("AdvSceneSwitcher.selectScene")),
+	: QWidget(parent),
+	  _scenes(new FilterComboBox(
+		  this, obs_module_text("AdvSceneSwitcher.selectScene"))),
+	  _canvas(new CanvasSelection(this)),
 	  _current(current),
 	  _previous(previous),
 	  _preview(preview),
 	  _variables(variables),
 	  _sceneGroups(sceneGroups)
 {
-	setDuplicatesEnabled(true);
-	PopulateSelection();
+	_scenes->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+	_scenes->setDuplicatesEnabled(true);
 
-	QWidget::connect(this, SIGNAL(currentIndexChanged(int)), this,
+	QWidget::connect(_scenes, SIGNAL(currentIndexChanged(int)), this,
 			 SLOT(SelectionChanged(int)));
-
-	// Scene groups
-	QWidget::connect(window(), SIGNAL(SceneGroupAdded(const QString &)),
-			 this, SLOT(ItemAdd(const QString &)));
-	QWidget::connect(window(), SIGNAL(SceneGroupRemoved(const QString &)),
-			 this, SLOT(ItemRemove(const QString &)));
-	QWidget::connect(
-		window(),
-		SIGNAL(SceneGroupRenamed(const QString &, const QString &)),
-		this, SLOT(ItemRename(const QString &, const QString &)));
+	QWidget::connect(_canvas, SIGNAL(CanvasChanged(const OBSWeakCanvas &)),
+			 this, SLOT(CanvasChangedSlot(const OBSWeakCanvas &)));
+	QWidget::connect(_canvas, SIGNAL(CanvasChanged(const OBSWeakCanvas &)),
+			 this, SIGNAL(CanvasChanged(const OBSWeakCanvas &)));
 
 	// Variables
 	QWidget::connect(VariableSignalManager::Instance(),
@@ -310,11 +388,29 @@ SceneSelectionWidget::SceneSelectionWidget(QWidget *parent, bool variables,
 	QWidget::connect(VariableSignalManager::Instance(),
 			 SIGNAL(Rename(const QString &, const QString &)), this,
 			 SLOT(ItemRename(const QString &, const QString &)));
+
+	auto layout = new QHBoxLayout();
+	layout->addWidget(_canvas);
+	layout->addWidget(_scenes);
+	setLayout(layout);
+	setContentsMargins(0, 0, 0, 0);
+	layout->setContentsMargins(0, 0, 0, 0);
+
+	if (GetCanvasCount() <= 1) {
+		LockToMainCanvas();
+	}
+
+	Resize();
 }
 
 void SceneSelectionWidget::SetScene(const SceneSelection &s)
 {
 	int idx = -1;
+
+	_canvas->SetCanvas(s._canvas);
+	if (!_isPopulated) {
+		PopulateSceneSelection(s._canvas);
+	}
 
 	switch (s.GetType()) {
 	case SceneSelection::Type::SCENE: {
@@ -322,7 +418,7 @@ void SceneSelectionWidget::SetScene(const SceneSelection &s)
 			idx = -1;
 			break;
 		}
-		idx = FindIdxInRagne(this, _groupsEndIdx, _scenesEndIdx,
+		idx = FindIdxInRagne(_scenes, _groupsEndIdx, _scenesEndIdx,
 				     s.ToString());
 		break;
 	}
@@ -331,7 +427,7 @@ void SceneSelectionWidget::SetScene(const SceneSelection &s)
 			idx = -1;
 			break;
 		}
-		idx = FindIdxInRagne(this, _variablesEndIdx, _groupsEndIdx,
+		idx = FindIdxInRagne(_scenes, _variablesEndIdx, _groupsEndIdx,
 				     s.ToString());
 		break;
 	}
@@ -342,7 +438,7 @@ void SceneSelectionWidget::SetScene(const SceneSelection &s)
 		}
 
 		idx = FindIdxInRagne(
-			this, _selectIdx, _placeholderEndIdx,
+			_scenes, _selectIdx, _placeholderEndIdx,
 			obs_module_text(
 				"AdvSceneSwitcher.selectPreviousScene"));
 		break;
@@ -354,7 +450,7 @@ void SceneSelectionWidget::SetScene(const SceneSelection &s)
 		}
 
 		idx = FindIdxInRagne(
-			this, _selectIdx, _placeholderEndIdx,
+			_scenes, _selectIdx, _placeholderEndIdx,
 			obs_module_text("AdvSceneSwitcher.selectCurrentScene"));
 		break;
 	}
@@ -365,7 +461,7 @@ void SceneSelectionWidget::SetScene(const SceneSelection &s)
 		}
 
 		idx = FindIdxInRagne(
-			this, _selectIdx, _placeholderEndIdx,
+			_scenes, _selectIdx, _placeholderEndIdx,
 			obs_module_text("AdvSceneSwitcher.selectPreviewScene"));
 		break;
 	}
@@ -374,16 +470,32 @@ void SceneSelectionWidget::SetScene(const SceneSelection &s)
 			idx = -1;
 			break;
 		}
-		idx = FindIdxInRagne(this, _placeholderEndIdx, _variablesEndIdx,
-				     s.ToString());
+		idx = FindIdxInRagne(_scenes, _placeholderEndIdx,
+				     _variablesEndIdx, s.ToString());
 		break;
 	default:
 		idx = -1;
 		break;
 	}
 	}
-	setCurrentIndex(idx);
+	_scenes->setCurrentIndex(idx);
 	_currentSelection = s;
+
+	Resize();
+}
+
+void SceneSelectionWidget::LockToMainCanvas()
+{
+	_forceMainCanvas = true;
+	_canvas->hide();
+}
+
+void SceneSelectionWidget::showEvent(QShowEvent *event)
+{
+	QWidget::showEvent(event);
+	const QSignalBlocker b1(_scenes);
+	const QSignalBlocker b2(_canvas);
+	Reset();
 }
 
 bool SceneSelectionWidget::IsCurrentSceneSelected(const QString &name)
@@ -410,11 +522,17 @@ void SceneSelectionWidget::SelectionChanged(int)
 	emit SceneChanged(_currentSelection);
 }
 
+void SceneSelectionWidget::CanvasChangedSlot(const OBSWeakCanvas &)
+{
+	_currentSelection = CurrentSelection();
+	Reset();
+}
+
 void SceneSelectionWidget::ItemAdd(const QString &)
 {
-	blockSignals(true);
+	const QSignalBlocker b1(_scenes);
+	const QSignalBlocker b2(_canvas);
 	Reset();
-	blockSignals(false);
 }
 
 bool SceneSelectionWidget::NameUsed(const QString &name)
@@ -425,7 +543,7 @@ bool SceneSelectionWidget::NameUsed(const QString &name)
 		return true;
 	}
 	return _currentSelection._type == SceneSelection::Type::VARIABLE &&
-	       currentText() == name;
+	       _scenes->currentText() == name;
 }
 
 void SceneSelectionWidget::ItemRemove(const QString &name)
@@ -439,9 +557,19 @@ void SceneSelectionWidget::ItemRemove(const QString &name)
 
 void SceneSelectionWidget::ItemRename(const QString &, const QString &)
 {
-	blockSignals(true);
+	const QSignalBlocker b1(_scenes);
+	const QSignalBlocker b2(_canvas);
 	Reset();
-	blockSignals(false);
+}
+
+void SceneSelectionWidget::Resize()
+{
+	_scenes->adjustSize();
+	_scenes->updateGeometry();
+	_canvas->adjustSize();
+	_canvas->updateGeometry();
+	adjustSize();
+	updateGeometry();
 }
 
 } // namespace advss

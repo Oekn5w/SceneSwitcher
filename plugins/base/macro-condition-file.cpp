@@ -156,6 +156,42 @@ void MacroConditionFile::SetupTempVars()
 			   obs_module_text(
 				   "AdvSceneSwitcher.tempVar.file.content"));
 	}
+
+	if (_fileType == FileType::REMOTE) {
+		return;
+	}
+
+	AddTempvar(
+		"basename",
+		obs_module_text("AdvSceneSwitcher.tempVar.file.basename"),
+		obs_module_text(
+			"AdvSceneSwitcher.tempVar.file.basename.description"));
+	AddTempvar(
+		"basenameComplete",
+		obs_module_text(
+			"AdvSceneSwitcher.tempVar.file.basenameComplete"),
+		obs_module_text(
+			"AdvSceneSwitcher.tempVar.file.basenameComplete.description"));
+	AddTempvar("suffix",
+		   obs_module_text("AdvSceneSwitcher.tempVar.file.suffix"),
+		   obs_module_text(
+			   "AdvSceneSwitcher.tempVar.file.suffix.description"));
+	AddTempvar(
+		"suffixComplete",
+		obs_module_text("AdvSceneSwitcher.tempVar.file.suffixComplete"),
+		obs_module_text(
+			"AdvSceneSwitcher.tempVar.file.suffixComplete.description"));
+	AddTempvar("filename",
+		   obs_module_text("AdvSceneSwitcher.tempVar.file.filename"));
+	AddTempvar("absoluteFilePath",
+		   obs_module_text(
+			   "AdvSceneSwitcher.tempVar.file.absoluteFilePath"));
+	AddTempvar(
+		"absolutePath",
+		obs_module_text("AdvSceneSwitcher.tempVar.file.absolutePath"));
+	AddTempvar("isAbsolutePath",
+		   obs_module_text(
+			   "AdvSceneSwitcher.tempVar.file.isAbsolutePath"));
 }
 
 bool MacroConditionFile::CheckCondition()
@@ -175,9 +211,46 @@ bool MacroConditionFile::CheckCondition()
 	case Condition::DATE_CHANGE:
 		ret = CheckChangeDate();
 		break;
+	case Condition::IS_FILE: {
+		QFileInfo info(QString::fromStdString(_file));
+		ret = info.isFile();
+		break;
+	}
+	case Condition::IS_FOLDER: {
+		QFileInfo info(QString::fromStdString(_file));
+		ret = info.isDir();
+		break;
+	}
+	case Condition::EXISTS: {
+		QFileInfo info(QString::fromStdString(_file));
+		ret = info.exists();
+		break;
+	}
 	default:
 		break;
 	}
+
+	if (std::string(_file) != _lastFile) {
+		QFileInfo info(QString::fromStdString(_file));
+		_basename = info.baseName().toStdString();
+		_basenameComplete = info.completeBaseName().toStdString();
+		_suffix = info.suffix().toStdString();
+		_suffixComplete = info.completeSuffix().toStdString();
+		_filename = info.fileName().toStdString();
+		_absoluteFilePath = info.absoluteFilePath().toStdString();
+		_absolutePath = info.absolutePath().toStdString();
+		_isAbsolutePath = info.isAbsolute();
+		_lastFile = _file;
+	}
+
+	SetTempVarValue("basename", _basename);
+	SetTempVarValue("basenameComplete", _basenameComplete);
+	SetTempVarValue("suffix", _suffix);
+	SetTempVarValue("suffixComplete", _suffixComplete);
+	SetTempVarValue("filename", _filename);
+	SetTempVarValue("absoluteFilePath", _absoluteFilePath);
+	SetTempVarValue("absolutePath", _absolutePath);
+	SetTempVarValue("isAbsolutePath", _isAbsolutePath);
 
 	if (GetVariableValue().empty()) {
 		SetVariableValue(ret ? "true" : "false");
@@ -237,6 +310,12 @@ static void populateConditions(QComboBox *list)
 		"AdvSceneSwitcher.condition.file.type.contentChange"));
 	list->addItem(obs_module_text(
 		"AdvSceneSwitcher.condition.file.type.dateChange"));
+	list->addItem(
+		obs_module_text("AdvSceneSwitcher.condition.file.type.exists"));
+	list->addItem(
+		obs_module_text("AdvSceneSwitcher.condition.file.type.isFile"));
+	list->addItem(obs_module_text(
+		"AdvSceneSwitcher.condition.file.type.isFolder"));
 }
 
 MacroConditionFileEdit::MacroConditionFileEdit(
@@ -357,11 +436,7 @@ void MacroConditionFileEdit::FileTypeChanged(int index)
 
 void MacroConditionFileEdit::ConditionChanged(int index)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->SetCondition(
 		static_cast<MacroConditionFile::Condition>(index));
 	SetWidgetVisibility();
@@ -369,11 +444,7 @@ void MacroConditionFileEdit::ConditionChanged(int index)
 
 void MacroConditionFileEdit::PathChanged(const QString &text)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_file = text.toUtf8().constData();
 	emit HeaderInfoChanged(
 		QString::fromStdString(_entryData->GetShortDesc()));
@@ -381,11 +452,7 @@ void MacroConditionFileEdit::PathChanged(const QString &text)
 
 void MacroConditionFileEdit::MatchTextChanged()
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_text = _matchText->toPlainText().toUtf8().constData();
 
 	adjustSize();
@@ -394,11 +461,7 @@ void MacroConditionFileEdit::MatchTextChanged()
 
 void MacroConditionFileEdit::RegexChanged(const RegexConfig &conf)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_regex = conf;
 	adjustSize();
 	updateGeometry();
@@ -406,21 +469,13 @@ void MacroConditionFileEdit::RegexChanged(const RegexConfig &conf)
 
 void MacroConditionFileEdit::CheckModificationDateChanged(int state)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_useTime = state;
 }
 
 void MacroConditionFileEdit::OnlyMatchIfChangedChanged(int state)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_onlyMatchIfChanged = state;
 }
 
@@ -442,6 +497,13 @@ void MacroConditionFileEdit::SetWidgetVisibility()
 		_entryData->_onlyMatchIfChanged &&
 		_entryData->GetCondition() ==
 			MacroConditionFile::Condition::MATCH);
+
+	// TODO: Remove remote file support in future version in favor of HTTP
+	// action.
+	// Hide the option for now, if it is not used already.
+	_fileTypes->setVisible(_entryData->_fileType ==
+			       MacroConditionFile::FileType::REMOTE);
+
 	adjustSize();
 	updateGeometry();
 }

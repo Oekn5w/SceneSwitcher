@@ -1,6 +1,8 @@
 #include "macro-action-random.hpp"
 #include "layout-helpers.hpp"
 #include "macro-helpers.hpp"
+#include "macro-signals.hpp"
+#include "ui-helpers.hpp"
 
 #include <cstdlib>
 
@@ -105,7 +107,8 @@ MacroActionRandomEdit::MacroActionRandomEdit(
 	QWidget::connect(_list, SIGNAL(Removed(int)), this, SLOT(Remove(int)));
 	QWidget::connect(_list, SIGNAL(Replaced(int, const std::string &)),
 			 this, SLOT(Replace(int, const std::string &)));
-	QWidget::connect(window(), SIGNAL(MacroRemoved(const QString &)), this,
+	QWidget::connect(MacroSignalManager::Instance(),
+			 SIGNAL(Remove(const QString &)), this,
 			 SLOT(MacroRemove(const QString &)));
 	QWidget::connect(_allowRepeat, SIGNAL(stateChanged(int)), this,
 			 SLOT(AllowRepeatChanged(int)));
@@ -157,11 +160,7 @@ void MacroActionRandomEdit::MacroRemove(const QString &)
 
 void MacroActionRandomEdit::Add(const std::string &name)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	MacroRef macro(name);
 	_entryData->_macros.push_back(macro);
 	_allowRepeat->setVisible(ShouldShowAllowRepeat());
@@ -170,11 +169,7 @@ void MacroActionRandomEdit::Add(const std::string &name)
 
 void MacroActionRandomEdit::Remove(int idx)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_macros.erase(std::next(_entryData->_macros.begin(), idx));
 	_allowRepeat->setVisible(ShouldShowAllowRepeat());
 	adjustSize();
@@ -182,23 +177,15 @@ void MacroActionRandomEdit::Remove(int idx)
 
 void MacroActionRandomEdit::Replace(int idx, const std::string &name)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
+	GUARD_LOADING_AND_LOCK();
 	MacroRef macro(name);
-	auto lock = LockContext();
 	_entryData->_macros[idx] = macro;
 	adjustSize();
 }
 
 void MacroActionRandomEdit::AllowRepeatChanged(int value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_allowRepeat = value;
 }
 

@@ -4,6 +4,7 @@
 #include "scene-item-transform-helpers.hpp"
 #include "source-settings-helpers.hpp"
 #include "selection-helpers.hpp"
+#include "ui-helpers.hpp"
 
 namespace advss {
 
@@ -29,10 +30,13 @@ const static std::map<MacroActionFilter::Action, std::string> actionTypes = {
 	 "AdvSceneSwitcher.action.filter.type.copyBoundsToSettings"},
 };
 
-const static std::map<MacroActionFilter::SettingsInputMethod, std::string>
+const static std::vector<
+	std::pair<MacroActionFilter::SettingsInputMethod, std::string>>
 	inputMethods = {
 		{MacroActionFilter::SettingsInputMethod::INDIVIDUAL_MANUAL,
 		 "AdvSceneSwitcher.action.filter.inputMethod.individualManual"},
+		{MacroActionFilter::SettingsInputMethod::INDIVIDUAL_LIST_ENTRY,
+		 "AdvSceneSwitcher.action.filter.inputMethod.individualListEntryManual"},
 		{MacroActionFilter::SettingsInputMethod::INDIVIDUAL_TEMPVAR,
 		 "AdvSceneSwitcher.action.filter.inputMethod.individualTempvar"},
 		{MacroActionFilter::SettingsInputMethod::JSON_STRING,
@@ -75,6 +79,10 @@ static void performActionHelper(
 		switch (settingsInputMethod) {
 		case MacroActionFilter::SettingsInputMethod::INDIVIDUAL_MANUAL:
 			SetSourceSetting(source, setting, manualSettingValue);
+			break;
+		case MacroActionFilter::SettingsInputMethod::INDIVIDUAL_LIST_ENTRY:
+			SetSourceSettingListEntryValueByName(
+				source, setting, manualSettingValue);
 			break;
 		case MacroActionFilter::SettingsInputMethod::INDIVIDUAL_TEMPVAR: {
 			auto var = tempVar.GetTempVariable(macro);
@@ -140,7 +148,7 @@ bool MacroActionFilter::Save(obs_data_t *obj) const
 			 static_cast<int>(_settingsInputMethod));
 	_setting.Save(obj);
 	_manualSettingValue.Save(obj, "manualSettingValue");
-	_tempVar.Save(obj);
+	_tempVar.Save(obj, GetMacro());
 	_settingsString.Save(obj, "settings");
 	_button.Save(obj);
 	_boundsSrcScene.Save(obj, "boundsSelectionScene");
@@ -210,8 +218,8 @@ void MacroActionFilter::ResolveVariablesToFixedValues()
 
 static inline void populateActionSelection(QComboBox *list)
 {
-	for (auto entry : actionTypes) {
-		list->addItem(obs_module_text(entry.second.c_str()));
+	for (const auto &[_, name] : actionTypes) {
+		list->addItem(obs_module_text(name.c_str()));
 	}
 }
 
@@ -224,10 +232,17 @@ static inline void populateSettingsInputMethods(QComboBox *list)
 	}
 }
 
+static QStringList getFilterSourcesList()
+{
+	auto sources = GetSourcesWithFilterNames();
+	sources.sort();
+	return sources;
+}
+
 MacroActionFilterEdit::MacroActionFilterEdit(
 	QWidget *parent, std::shared_ptr<MacroActionFilter> entryData)
 	: QWidget(parent),
-	  _sources(new SourceSelectionWidget(this, QStringList(), true)),
+	  _sources(new SourceSelectionWidget(this, getFilterSourcesList, true)),
 	  _filters(new FilterSelectionWidget(this, _sources, true)),
 	  _actions(new QComboBox()),
 	  _getSettings(new QPushButton(obs_module_text(
@@ -240,19 +255,16 @@ MacroActionFilterEdit::MacroActionFilterEdit(
 	  _settingsString(new VariableTextEdit(this)),
 	  _refreshSettingSelection(new QPushButton(
 		  obs_module_text("AdvSceneSwitcher.action.filter.refresh"))),
-	  _settingsButtons(new QComboBox()),
 	  _boundsSrcScene(
 		  new SceneSelectionWidget(window(), true, false, false, true)),
 	  _boundsSrcSource(new SceneItemSelectionWidget(parent)),
 	  _boundsSrcLabel(new QLabel(obs_module_text(
-		  "AdvSceneSwitcher.action.filter.copyBounds.entry.label")))
+		  "AdvSceneSwitcher.action.filter.copyBounds.entry.label"))),
+	  _settingsButtons(new SourceSettingsButtonSelection(this))
 {
 	_filters->setSizeAdjustPolicy(QComboBox::AdjustToContents);
 
 	populateActionSelection(_actions);
-	auto sources = GetSourcesWithFilterNames();
-	sources.sort();
-	_sources->SetSourceNameList(sources);
 	_refreshSettingSelection->setToolTip(obs_module_text(
 		"AdvSceneSwitcher.action.filter.refresh.tooltip"));
 
@@ -283,8 +295,10 @@ MacroActionFilterEdit::MacroActionFilterEdit(
 			 SLOT(SelectionChanged(const SourceSetting &)));
 	QWidget::connect(_refreshSettingSelection, SIGNAL(clicked()), this,
 			 SLOT(RefreshVariableSourceSelectionValue()));
-	QWidget::connect(_settingsButtons, SIGNAL(currentIndexChanged(int)),
-			 this, SLOT(ButtonChanged(int)));
+	QWidget::connect(_settingsButtons,
+			 SIGNAL(SelectionChanged(const SourceSettingButton &)),
+			 this,
+			 SLOT(ButtonChanged(const SourceSettingButton &)));
 	QWidget::connect(_boundsSrcScene,
 			 SIGNAL(SceneChanged(const SceneSelection &)), this,
 			 SLOT(BoundsSrcSceneChanged(const SceneSelection &)));
@@ -358,27 +372,20 @@ void MacroActionFilterEdit::UpdateEntryData()
 	const auto filters =
 		_entryData->_filter.GetFilters(_entryData->_source);
 	OBSWeakSource firstFilter = filters.empty() ? nullptr : filters.at(0);
-	_filterSettings->SetSource(firstFilter);
-	_filterSettings->SetSetting(_entryData->_setting);
+	_filterSettings->SetSelection(firstFilter, _entryData->_setting);
 	_settingsInputMethods->setCurrentIndex(_settingsInputMethods->findData(
 		static_cast<int>(_entryData->_settingsInputMethod)));
 	_tempVars->SetVariable(_entryData->_tempVar);
 	_manualSettingValue->setPlainText(_entryData->_manualSettingValue);
-	PopulateSourceButtonSelection(_settingsButtons, firstFilter);
-	_settingsButtons->setCurrentText(
-		QString::fromStdString(_entryData->_button.ToString()));
 	_boundsSrcScene->SetScene(_entryData->_boundsSrcScene);
 	_boundsSrcSource->SetSceneItem(_entryData->_boundsSrcSource);
+	_settingsButtons->SetSelection(firstFilter, _entryData->_button);
 	SetWidgetVisibility();
 }
 
 void MacroActionFilterEdit::SourceChanged(const SourceSelection &source)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_source = source;
 }
 
@@ -392,11 +399,13 @@ void MacroActionFilterEdit::FilterChanged(const FilterSelection &filter)
 		auto lock = LockContext();
 		_entryData->_filter = filter;
 	}
+
 	const auto filters =
 		_entryData->_filter.GetFilters(_entryData->_source);
 	OBSWeakSource firstFilter = filters.empty() ? nullptr : filters.at(0);
 	_filterSettings->SetSource(firstFilter);
-	PopulateSourceButtonSelection(_settingsButtons, firstFilter);
+	_settingsButtons->SetSource(firstFilter);
+
 	SetWidgetVisibility();
 	emit HeaderInfoChanged(
 		QString::fromStdString(_entryData->GetShortDesc()));
@@ -404,11 +413,7 @@ void MacroActionFilterEdit::FilterChanged(const FilterSelection &filter)
 
 void MacroActionFilterEdit::ActionChanged(int value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_action = static_cast<MacroActionFilter::Action>(value);
 	SetWidgetVisibility();
 }
@@ -431,14 +436,25 @@ void MacroActionFilterEdit::GetSettingsClicked()
 				.value_or(""));
 		break;
 	}
+	case MacroActionFilter::SettingsInputMethod::INDIVIDUAL_LIST_ENTRY: {
+		const auto filters =
+			_entryData->_filter.GetFilters(_entryData->_source);
+		_manualSettingValue->setPlainText(
+			GetSourceSettingListEntryName(
+				filters.empty() ? nullptr : filters.at(0),
+				_entryData->_setting)
+				.value_or(""));
+		break;
+	}
 	case MacroActionFilter::SettingsInputMethod::INDIVIDUAL_TEMPVAR:
 		break;
 	case MacroActionFilter::SettingsInputMethod::JSON_STRING: {
 		const auto filters =
 			_entryData->_filter.GetFilters(_entryData->_source);
+		const auto settings = GetSourceSettings(
+			filters.empty() ? nullptr : filters.at(0), true);
 		_settingsString->setPlainText(
-			FormatJsonString(GetSourceSettings(
-				filters.empty() ? nullptr : filters.at(0))));
+			FormatJsonString(settings ? *settings : ""));
 		break;
 	}
 	}
@@ -446,11 +462,7 @@ void MacroActionFilterEdit::GetSettingsClicked()
 
 void MacroActionFilterEdit::SettingsStringChanged()
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_settingsString =
 		_settingsString->toPlainText().toStdString();
 
@@ -460,11 +472,7 @@ void MacroActionFilterEdit::SettingsStringChanged()
 
 void MacroActionFilterEdit::SettingsInputMethodChanged(int idx)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_settingsInputMethod =
 		static_cast<MacroActionFilter::SettingsInputMethod>(
 			_settingsInputMethods->itemData(idx).toInt());
@@ -473,31 +481,20 @@ void MacroActionFilterEdit::SettingsInputMethodChanged(int idx)
 
 void MacroActionFilterEdit::SelectionChanged(const TempVariableRef &var)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_tempVar = var;
 }
 
 void MacroActionFilterEdit::SelectionChanged(const SourceSetting &setting)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_setting = setting;
+	SetWidgetVisibility();
 }
 
 void MacroActionFilterEdit::ManualSettingsValueChanged()
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_manualSettingValue =
 		_manualSettingValue->toPlainText().toStdString();
 
@@ -512,15 +509,26 @@ void MacroActionFilterEdit::RefreshVariableSourceSelectionValue()
 	_filterSettings->SetSource(filters.empty() ? nullptr : filters.at(0));
 }
 
-void MacroActionFilterEdit::ButtonChanged(int idx)
+void MacroActionFilterEdit::ButtonChanged(const SourceSettingButton &button)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
+	GUARD_LOADING_AND_LOCK();
+	_entryData->_button = button;
+}
 
-	auto lock = LockContext();
-	_entryData->_button = qvariant_cast<SourceSettingButton>(
-		_settingsButtons->itemData(idx));
+static QString GetIndividualListEntryName()
+{
+	static const auto matchesInput =
+		[](const std::pair<MacroActionFilter::SettingsInputMethod,
+				   std::string> &p) {
+			return p.first ==
+			       MacroActionFilter::SettingsInputMethod::
+				       INDIVIDUAL_LIST_ENTRY;
+		};
+	static const QString listValueText(
+		obs_module_text(std::find_if(inputMethods.begin(),
+					     inputMethods.end(), matchesInput)
+					->second.c_str()));
+	return listValueText;
 }
 
 void MacroActionFilterEdit::BoundsSrcSceneChanged(const SceneSelection &s)
@@ -559,17 +567,27 @@ void MacroActionFilterEdit::SetWidgetVisibility()
 		_entryData->_action == MacroActionFilter::Action::SETTINGS &&
 		_entryData->_settingsInputMethod ==
 			MacroActionFilter::SettingsInputMethod::JSON_STRING);
-	_getSettings->setVisible(_entryData->_action ==
-				 MacroActionFilter::Action::SETTINGS);
+	_getSettings->setVisible(
+		_entryData->_action == MacroActionFilter::Action::SETTINGS &&
+		_entryData->_settingsInputMethod !=
+			MacroActionFilter::SettingsInputMethod::
+				INDIVIDUAL_TEMPVAR);
 	_tempVars->setVisible(_entryData->_action ==
 				      MacroActionFilter::Action::SETTINGS &&
 			      _entryData->_settingsInputMethod ==
 				      MacroActionFilter::SettingsInputMethod::
 					      INDIVIDUAL_TEMPVAR);
 
+	SetRowVisibleByValue(_settingsInputMethods,
+			     GetIndividualListEntryName(),
+			     _entryData->_setting.IsList());
+
 	if (_entryData->_action == MacroActionFilter::Action::SETTINGS &&
-	    _entryData->_settingsInputMethod ==
-		    MacroActionFilter::SettingsInputMethod::INDIVIDUAL_MANUAL) {
+	    (_entryData->_settingsInputMethod ==
+		     MacroActionFilter::SettingsInputMethod::INDIVIDUAL_MANUAL ||
+	     _entryData->_settingsInputMethod ==
+		     MacroActionFilter::SettingsInputMethod::
+			     INDIVIDUAL_LIST_ENTRY)) {
 		RemoveStretchIfPresent(_settingsLayout);
 		_manualSettingValue->show();
 	} else {
@@ -578,8 +596,12 @@ void MacroActionFilterEdit::SetWidgetVisibility()
 	}
 
 	_refreshSettingSelection->setVisible(
-		_entryData->_settingsInputMethod ==
-			MacroActionFilter::SettingsInputMethod::INDIVIDUAL_MANUAL &&
+		(_entryData->_settingsInputMethod ==
+			 MacroActionFilter::SettingsInputMethod::
+				 INDIVIDUAL_MANUAL ||
+		 _entryData->_settingsInputMethod ==
+			 MacroActionFilter::SettingsInputMethod::
+				 INDIVIDUAL_LIST_ENTRY) &&
 		(_entryData->_source.GetType() ==
 			 SourceSelection::Type::VARIABLE ||
 		 _entryData->_filter.GetType() ==

@@ -11,8 +11,11 @@ EXPORT void LoadPluginSettings(obs_data_t *);
 EXPORT void AddSaveStep(std::function<void(obs_data_t *)>);
 EXPORT void AddLoadStep(std::function<void(obs_data_t *)>);
 EXPORT void AddPostLoadStep(std::function<void()>);
-EXPORT void AddIntervalResetStep(std::function<void()>, bool lock = true);
-EXPORT void RunPostLoadSteps();
+EXPORT void AddIntervalResetStep(std::function<void()>);
+void RunSaveSteps(obs_data_t *);
+void RunLoadSteps(obs_data_t *);
+EXPORT void RunAndClearPostLoadSteps();
+void ClearPostLoadSteps();
 
 EXPORT void AddPluginInitStep(std::function<void()>);
 EXPORT void AddPluginPostLoadStep(std::function<void()>);
@@ -25,6 +28,11 @@ EXPORT void StopPlugin();
 EXPORT void StartPlugin();
 EXPORT bool PluginIsRunning();
 EXPORT int GetIntervalValue();
+EXPORT void AddStartStep(std::function<void()>);
+EXPORT void AddStopStep(std::function<void()>);
+void RunStartSteps();
+void RunStopSteps();
+void RunIntervalResetSteps();
 
 enum class NoMatchBehavior { NO_SWITCH = 0, SWITCH = 1, RANDOM_SWITCH = 2 };
 EXPORT void SetPluginNoMatchBehavior(NoMatchBehavior);
@@ -41,5 +49,8 @@ EXPORT bool OBSIsShuttingDown();
 EXPORT bool InitialLoadIsComplete();
 EXPORT bool IsFirstInterval();
 EXPORT bool IsFirstIntervalAfterStop();
+
+EXPORT void SetMacroHighlightingEnabled(bool enable);
+EXPORT bool IsMacroHighlightingEnabled();
 
 } // namespace advss

@@ -292,8 +292,8 @@ bool MacroConditionAudio::Save(obs_data_t *obj) const
 	return true;
 }
 
-obs_volmeter_t *AddVolmeterToSource(MacroConditionAudio *entry,
-				    obs_weak_source *source)
+static obs_volmeter_t *addVolmeterToSource(MacroConditionAudio *entry,
+					   obs_weak_source *source)
 {
 	obs_volmeter_t *volmeter = obs_volmeter_create(OBS_FADER_LOG);
 	obs_volmeter_add_callback(volmeter, MacroConditionAudio::SetVolumeLevel,
@@ -328,7 +328,7 @@ bool MacroConditionAudio::Load(obs_data_t *obj)
 		obs_data_get_int(obj, "outputCondition"));
 	_volumeCondition = static_cast<VolumeCondition>(
 		obs_data_get_int(obj, "volumeCondition"));
-	_volmeter = AddVolmeterToSource(this, _audioSource.GetSource());
+	_volmeter = addVolmeterToSource(this, _audioSource.GetSource());
 
 	if (obs_data_get_int(obj, "version") < 2) {
 		// Set default values for dB handling
@@ -379,7 +379,7 @@ void MacroConditionAudio::ResetVolmeter()
 	obs_volmeter_remove_callback(_volmeter, SetVolumeLevel, this);
 	obs_volmeter_destroy(_volmeter);
 
-	_volmeter = AddVolmeterToSource(this, _audioSource.GetSource());
+	_volmeter = addVolmeterToSource(this, _audioSource.GetSource());
 }
 
 void MacroConditionAudio::SetupTempVars()
@@ -458,11 +458,18 @@ static inline void populateVolumeConditionSelection(QComboBox *list)
 	}
 }
 
+static QStringList getAudioSourcesList()
+{
+	auto sources = GetAudioSourceNames();
+	sources.sort();
+	return sources;
+}
+
 MacroConditionAudioEdit::MacroConditionAudioEdit(
 	QWidget *parent, std::shared_ptr<MacroConditionAudio> entryData)
 	: QWidget(parent),
 	  _checkTypes(new QComboBox()),
-	  _sources(new SourceSelectionWidget(this, QStringList(), true)),
+	  _sources(new SourceSelectionWidget(this, getAudioSourcesList, true)),
 	  _condition(new QComboBox()),
 	  _volumePercent(new VariableDoubleSpinBox()),
 	  _volumeDB(new VariableDoubleSpinBox),
@@ -483,10 +490,6 @@ MacroConditionAudioEdit::MacroConditionAudioEdit(
 	_syncOffset->setMinimum(-950);
 	_syncOffset->setMaximum(20000);
 	_syncOffset->setSuffix("ms");
-
-	auto sources = GetAudioSourceNames();
-	sources.sort();
-	_sources->SetSourceNameList(sources);
 
 	QWidget::connect(_checkTypes, SIGNAL(currentIndexChanged(int)), this,
 			 SLOT(CheckTypeChanged(int)));
@@ -565,12 +568,8 @@ void MacroConditionAudioEdit::UpdateVolmeterSource()
 
 void MacroConditionAudioEdit::SourceChanged(const SourceSelection &source)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
 	{
-		auto lock = LockContext();
+		GUARD_LOADING_AND_LOCK();
 		_entryData->_audioSource = source;
 		_entryData->ResetVolmeter();
 	}
@@ -583,11 +582,8 @@ void MacroConditionAudioEdit::SourceChanged(const SourceSelection &source)
 void MacroConditionAudioEdit::VolumePercentChanged(
 	const NumberVariable<double> &vol)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
 	{
-		auto lock = LockContext();
+		GUARD_LOADING_AND_LOCK();
 		_entryData->_volumePercent = vol;
 	}
 
@@ -596,42 +592,27 @@ void MacroConditionAudioEdit::VolumePercentChanged(
 
 void MacroConditionAudioEdit::SyncOffsetChanged(const NumberVariable<int> &value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_syncOffset = value;
 }
 
 void MacroConditionAudioEdit::MonitorTypeChanged(int value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_monitorType = static_cast<obs_monitoring_type>(value);
 }
 
 void MacroConditionAudioEdit::BalanceChanged(const NumberVariable<double> &value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_balance = value;
 }
 
 void MacroConditionAudioEdit::VolumeDBChanged(
 	const NumberVariable<double> &value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
 	{
-		auto lock = LockContext();
+		GUARD_LOADING_AND_LOCK();
 		_entryData->_volumeDB = value;
 	}
 	SyncSliderAndValueSelection(false);
@@ -639,11 +620,7 @@ void MacroConditionAudioEdit::VolumeDBChanged(
 
 void MacroConditionAudioEdit::PercentDBClicked()
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_useDb = !_entryData->_useDb;
 	SetWidgetVisibility();
 }
@@ -703,11 +680,7 @@ void MacroConditionAudioEdit::ConditionChanged(int cond)
 
 void MacroConditionAudioEdit::CheckTypeChanged(int idx)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->SetType(static_cast<MacroConditionAudio::Type>(
 		_checkTypes->itemData(idx).toInt()));
 

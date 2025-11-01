@@ -127,8 +127,20 @@ static inline void populateActionSelection(QComboBox *list)
 MacroActionSceneVisibilityEdit::MacroActionSceneVisibilityEdit(
 	QWidget *parent, std::shared_ptr<MacroActionSceneVisibility> entryData)
 	: QWidget(parent),
-	  _scenes(new SceneSelectionWidget(window(), true, false, true, true)),
-	  _sources(new SceneItemSelectionWidget(parent)),
+	  _scenes(new SceneSelectionWidget(this, true, false, true, true)),
+	  _sources(new SceneItemSelectionWidget(
+		  parent,
+		  {
+			  SceneItemSelection::Type::SOURCE_NAME,
+			  SceneItemSelection::Type::VARIABLE_NAME,
+			  SceneItemSelection::Type::SOURCE_NAME_PATTERN,
+			  SceneItemSelection::Type::SOURCE_GROUP,
+			  SceneItemSelection::Type::SOURCE_TYPE,
+			  SceneItemSelection::Type::INDEX,
+			  SceneItemSelection::Type::INDEX_RANGE,
+			  SceneItemSelection::Type::ALL,
+		  },
+		  SceneItemSelectionWidget::NameClashMode::ALL)),
 	  _actions(new QComboBox())
 {
 	populateActionSelection(_actions);
@@ -170,22 +182,14 @@ void MacroActionSceneVisibilityEdit::UpdateEntryData()
 
 void MacroActionSceneVisibilityEdit::SceneChanged(const SceneSelection &s)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_scene = s;
 }
 
 void MacroActionSceneVisibilityEdit::SourceChanged(
 	const SceneItemSelection &item)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_source = item;
 	emit HeaderInfoChanged(
 		QString::fromStdString(_entryData->GetShortDesc()));
@@ -195,11 +199,7 @@ void MacroActionSceneVisibilityEdit::SourceChanged(
 
 void MacroActionSceneVisibilityEdit::ActionChanged(int value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_action =
 		static_cast<MacroActionSceneVisibility::Action>(value);
 }

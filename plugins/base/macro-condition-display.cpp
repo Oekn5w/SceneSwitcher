@@ -1,6 +1,5 @@
 #include "macro-condition-display.hpp"
 #include "layout-helpers.hpp"
-#include "monitor-helpers.hpp"
 
 #include <QGuiApplication>
 #include <QScreen>
@@ -254,7 +253,7 @@ MacroConditionDisplayEdit::MacroConditionDisplayEdit(
 	: QWidget(parent),
 	  _conditions(new QComboBox()),
 	  _compareModes(new QComboBox()),
-	  _displays(new QComboBox()),
+	  _displays(new MonitorSelectionWidget(this)),
 	  _regex(new RegexConfigWidget()),
 	  _displayCount(new VariableSpinBox(this)),
 	  _displayWidth(new VariableSpinBox(this)),
@@ -264,8 +263,6 @@ MacroConditionDisplayEdit::MacroConditionDisplayEdit(
 {
 	populateConditionSelection(_conditions);
 	populateCompareModeselection(_compareModes);
-	_displays->addItems(GetMonitorNames());
-	_displays->setEditable(true);
 	_displayWidth->setMaximum(99999);
 	_displayHeight->setMaximum(99999);
 
@@ -316,11 +313,7 @@ MacroConditionDisplayEdit::MacroConditionDisplayEdit(
 
 void MacroConditionDisplayEdit::ConditionChanged(int value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->SetCondition(
 		static_cast<MacroConditionDisplay::Condition>(value));
 	SetWidgetVisibility();
@@ -328,32 +321,20 @@ void MacroConditionDisplayEdit::ConditionChanged(int value)
 
 void MacroConditionDisplayEdit::CompareModeChanged(int value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_compare =
 		static_cast<MacroConditionDisplay::CompareMode>(value);
 }
 
 void MacroConditionDisplayEdit::DisplayNameChanged(const QString &display)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_displayName = display.toStdString();
 }
 
 void MacroConditionDisplayEdit::RegexChanged(const RegexConfig &conf)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_regexConf = conf;
 
 	adjustSize();
@@ -363,43 +344,27 @@ void MacroConditionDisplayEdit::RegexChanged(const RegexConfig &conf)
 void MacroConditionDisplayEdit::DisplayCountChanged(
 	const NumberVariable<int> &value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_displayCount = value;
 }
 
 void MacroConditionDisplayEdit::DisplayWidthChanged(
 	const NumberVariable<int> &value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_displayWidth = value;
 }
 
 void MacroConditionDisplayEdit::DisplayHeightChanged(
 	const NumberVariable<int> &value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_displayHeight = value;
 }
 
 void MacroConditionDisplayEdit::UseDevicePixelRatioChanged(int state)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_useDevicePixelRatio = state;
 }
 

@@ -15,42 +15,45 @@ struct RequestResult {
 
 const char *GetClientID();
 
-// These functions do *not* use or create RequestResult cache entries
+// These functions can cache the RequestResult for 10s
+
 RequestResult SendGetRequest(const TwitchToken &token, const std::string &uri,
-			     const std::string &path,
-			     const httplib::Params &params = {});
-RequestResult SendPostRequest(const TwitchToken &token, const std::string &uri,
-			      const std::string &path,
-			      const httplib::Params &params = {},
-			      const OBSData &data = nullptr);
-RequestResult SendPutRequest(const TwitchToken &token, const std::string &uri,
 			     const std::string &path,
 			     const httplib::Params &params = {},
-			     const OBSData &data = nullptr);
-RequestResult SendPatchRequest(const TwitchToken &token, const std::string &uri,
-			       const std::string &path,
-			       const httplib::Params &params = {},
-			       const OBSData &data = nullptr);
-RequestResult SendDeleteRequest(const TwitchToken &token,
-				const std::string &uri, const std::string &path,
-				const httplib::Params &params = {});
-
-// These functions will cache the RequestResult for 10s
-// Note that the cache will be reported as a "memory leak" on OBS shutdown
-RequestResult SendGetRequest(const TwitchToken &token, const std::string &uri,
-			     const std::string &path,
-			     const httplib::Params &params, bool useCache);
+			     bool useCache = false);
 RequestResult SendPostRequest(const TwitchToken &token, const std::string &uri,
 			      const std::string &path,
 			      const httplib::Params &params,
-			      const OBSData &data, bool useCache);
+			      const OBSData &data, bool useCache = false);
+RequestResult SendPostRequest(const TwitchToken &token, const std::string &uri,
+			      const std::string &path,
+			      const httplib::Params &params = {},
+			      const std::string &data = "",
+			      bool useCache = false);
 RequestResult SendPutRequest(const TwitchToken &token, const std::string &uri,
 			     const std::string &path,
 			     const httplib::Params &params, const OBSData &data,
-			     bool useCache);
+			     bool useCache = false);
+RequestResult SendPutRequest(const TwitchToken &token, const std::string &uri,
+			     const std::string &path,
+			     const httplib::Params &params = {},
+			     const std::string &data = "",
+			     bool useCache = false);
 RequestResult SendPatchRequest(const TwitchToken &token, const std::string &uri,
 			       const std::string &path,
 			       const httplib::Params &params,
-			       const OBSData &data, bool useCache);
+			       const OBSData &data, bool useCache = false);
+RequestResult SendPatchRequest(const TwitchToken &token, const std::string &uri,
+			       const std::string &path,
+			       const httplib::Params &params = {},
+			       const std::string &data = "",
+			       bool useCache = false);
+
+// Helper functions to set temp var values
+
+void SetJsonTempVars(const std::string &jsonStr,
+		     std::function<void(const char *, const char *)> setVarFunc);
+void SetJsonTempVars(obs_data_t *data,
+		     std::function<void(const char *, const char *)> setVarFunc);
 
 } // namespace advss

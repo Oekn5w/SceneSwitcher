@@ -43,6 +43,7 @@ public:
 		RAID_INBOUND_EVENT = 1000,
 		SHOUTOUT_OUTBOUND_EVENT = 1100,
 		SHOUTOUT_INBOUND_EVENT = 1200,
+		COMMERCIAL_START = 1250,
 		POLL_START_EVENT = 1300,
 		POLL_PROGRESS_EVENT = 1400,
 		POLL_END_EVENT = 1500,
@@ -74,6 +75,8 @@ public:
 
 		// Chat
 		CHAT_MESSAGE_RECEIVED = 500000,
+		CHAT_MESSAGE_REMOVED = 500030,
+		CHAT_CLEARED = 500060,
 		CHAT_USER_JOINED = 500100,
 		CHAT_USER_LEFT = 500200,
 
@@ -111,8 +114,18 @@ public:
 private:
 	bool CheckChannelGenericEvents();
 	bool CheckChannelLiveEvents();
+	bool CheckChannelRewardChangeEvents();
+	bool CheckChannelRewardRedemptionEvents();
+	bool HandleMatchingSubscriptionEvents(
+		const std::function<void(const Event &)> &matchCb);
+
 	bool CheckChatMessages(TwitchToken &token);
 	bool CheckChatUserJoinOrLeave(TwitchToken &token);
+	bool CheckChatClear(TwitchToken &token);
+	bool CheckChatMessageRemove(TwitchToken &token);
+	bool ChatConnectionIsSetup(TwitchToken &token);
+	bool HandleChatEvents(
+		const std::function<bool(const IRCMessage &)> &matchCb);
 
 	void RegisterEventSubscription();
 	void ResetSubscription();
@@ -171,12 +184,11 @@ private slots:
 	void StreamTitleChanged();
 	void RegexTitleChanged(const RegexConfig &);
 	void ChatMessagePatternChanged(const ChatMessagePattern &);
-	void CategoreyChanged(const TwitchCategory &);
+	void CategoryChanged(const TwitchCategory &);
 	void ClearBufferOnMatchChanged(int);
 
 signals:
 	void HeaderInfoChanged(const QString &);
-	void TempVarsChanged();
 
 private:
 	void SetWidgetVisibility();

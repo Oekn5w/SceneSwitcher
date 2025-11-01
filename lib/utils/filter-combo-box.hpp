@@ -13,9 +13,12 @@ public:
 	FilterComboBox(QWidget *parent = nullptr,
 		       const QString &placehodler = "");
 	static void SetFilterBehaviourEnabled(bool);
+	void SetAllowUnmatchedSelection(bool allow);
 
 	void setCurrentText(const QString &text);
 	void setItemText(int index, const QString &text);
+
+	QSize sizeHint() const override;
 
 protected:
 	void focusOutEvent(QFocusEvent *event) override;
@@ -27,6 +30,7 @@ private slots:
 private:
 	void Emit(int index, const QString &text);
 
+	bool _allowUnmatchedSelection = false;
 	int _lastEmittedIndex = -1;
 	QString _lastEmittedText;
 

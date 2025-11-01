@@ -113,6 +113,7 @@ void ActionQueue::Add(const std::shared_ptr<MacroAction> &action)
 		action->Save(data);
 		copy->Load(data);
 		copy->PostLoad();
+		RunAndClearPostLoadSteps();
 		copy->ResolveVariablesToFixedValues();
 		_actions.emplace_back(copy);
 	} else {
@@ -179,7 +180,7 @@ ActionQueueSettingsDialog::ActionQueueSettingsDialog(QWidget *parent,
 			     "AdvSceneSwitcher.actionQueues.select",
 			     "AdvSceneSwitcher.actionQueues.add",
 			     "AdvSceneSwitcher.actionQueues.nameNotAvailable",
-			     parent),
+			     true, parent),
 	  _queueRunStatus(new QLabel()),
 	  _startStopToggle(new QPushButton()),
 	  _queueSize(new QLabel()),

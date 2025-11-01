@@ -44,11 +44,6 @@ void SwitcherData::Prune()
 		}
 	}
 
-	if (nonMatchingScene && !WeakSourceValid(nonMatchingScene)) {
-		switchIfNotMatching = NoMatchBehavior::NO_SWITCH;
-		nonMatchingScene = nullptr;
-	}
-
 	for (size_t i = 0; i < randomSwitches.size(); i++) {
 		RandomSwitch &s = randomSwitches[i];
 		if (!s.valid()) {
@@ -168,42 +163,6 @@ void SwitcherData::SaveVersion(obs_data_t *obj,
 	obs_data_set_string(obj, "version", currentVersion.c_str());
 }
 
-void SwitcherData::AddIntervalResetStep(std::function<void()> function,
-					bool tryLock)
-{
-	if (!tryLock) {
-		resetIntervalSteps.emplace_back(function);
-		return;
-	}
-	std::lock_guard<std::mutex> lock(switcher->m);
-	resetIntervalSteps.emplace_back(function);
-}
-
-void SwitcherData::RunPostLoadSteps()
-{
-	for (const auto &func : postLoadSteps) {
-		func();
-	}
-	postLoadSteps.clear();
-}
-
-void SwitcherData::AddSaveStep(std::function<void(obs_data_t *)> function)
-{
-	std::lock_guard<std::mutex> lock(switcher->m);
-	saveSteps.emplace_back(function);
-}
-
-void SwitcherData::AddLoadStep(std::function<void(obs_data_t *)> function)
-{
-	std::lock_guard<std::mutex> lock(switcher->m);
-	loadSteps.emplace_back(function);
-}
-
-void SwitcherData::AddPostLoadStep(std::function<void()> function)
-{
-	postLoadSteps.emplace_back(function);
-}
-
 static void startHotkeyFunc(void *, obs_hotkey_id, obs_hotkey_t *, bool pressed)
 {
 	if (pressed) {
@@ -266,6 +225,16 @@ static void removeMacroSegmentHotkeyFunc(void *, obs_hotkey_id, obs_hotkey_t *,
 	}
 }
 
+static void addNewMacroHotkeyFunc(void *, obs_hotkey_id, obs_hotkey_t *,
+				  bool pressed)
+{
+	if (pressed && SettingsWindowIsOpened()) {
+		QMetaObject::invokeMethod(GetSettingsWindow(),
+					  "on_macroAdd_clicked",
+					  Qt::QueuedConnection);
+	}
+}
+
 static void registerHotkeys()
 {
 	switcher->startHotkey = obs_hotkey_register_frontend(
@@ -281,19 +250,21 @@ static void registerHotkeys()
 		obs_module_text(
 			"AdvSceneSwitcher.hotkey.startStopToggleSwitcherHotkey"),
 		startStopToggleHotkeyFunc, NULL);
+	switcher->newMacroHotkey = obs_hotkey_register_frontend(
+		"newMacroSwitcherHotkey",
+		obs_module_text("AdvSceneSwitcher.hotkey.macro.new"),
+		addNewMacroHotkeyFunc, NULL);
 	switcher->upMacroSegment = obs_hotkey_register_frontend(
 		"upMacroSegmentSwitcherHotkey",
-		obs_module_text("AdvSceneSwitcher.hotkey.upMacroSegmentHotkey"),
+		obs_module_text("AdvSceneSwitcher.hotkey.macro.segment.up"),
 		upMacroSegmentHotkeyFunc, NULL);
 	switcher->downMacroSegment = obs_hotkey_register_frontend(
 		"downMacroSegmentSwitcherHotkey",
-		obs_module_text(
-			"AdvSceneSwitcher.hotkey.downMacroSegmentHotkey"),
+		obs_module_text("AdvSceneSwitcher.hotkey.macro.segment.down"),
 		downMacroSegmentHotkeyFunc, NULL);
 	switcher->removeMacroSegment = obs_hotkey_register_frontend(
 		"removeMacroSegmentSwitcherHotkey",
-		obs_module_text(
-			"AdvSceneSwitcher.hotkey.removeMacroSegmentHotkey"),
+		obs_module_text("AdvSceneSwitcher.hotkey.macro.segment.remove"),
 		removeMacroSegmentHotkeyFunc, NULL);
 
 	switcher->hotkeysRegistered = true;
@@ -311,6 +282,7 @@ void SwitcherData::SaveHotkeys(obs_data_t *obj)
 	saveHotkey(obj, startHotkey, "startHotkey");
 	saveHotkey(obj, stopHotkey, "stopHotkey");
 	saveHotkey(obj, toggleHotkey, "toggleHotkey");
+	saveHotkey(obj, newMacroHotkey, "newMacroHotkey");
 	saveHotkey(obj, upMacroSegment, "upMacroSegmentHotkey");
 	saveHotkey(obj, downMacroSegment, "downMacroSegmentHotkey");
 	saveHotkey(obj, removeMacroSegment, "removeMacroSegmentHotkey");
@@ -323,14 +295,31 @@ static void loadHotkey(obs_data_t *obj, obs_hotkey_id id, const char *name)
 	obs_data_array_release(a);
 }
 
+static void setDefaultHotkeyBinding(obs_data_t *data, const char *name,
+				    const char *value)
+{
+	OBSDataAutoRelease hotkeyData = obs_data_create_from_json(value);
+	OBSDataArrayAutoRelease hotkeyArray = obs_data_array_create();
+	obs_data_array_push_back(hotkeyArray, hotkeyData);
+	obs_data_set_default_array(data, name, hotkeyArray);
+}
+
 void SwitcherData::LoadHotkeys(obs_data_t *obj)
 {
 	if (!hotkeysRegistered) {
 		registerHotkeys();
 	}
+
+	setDefaultHotkeyBinding(obj, "newMacroHotkey",
+				"{"
+				"\"control\": true,"
+				"\"key\": \"OBS_KEY_N\""
+				"}");
+
 	loadHotkey(obj, startHotkey, "startHotkey");
 	loadHotkey(obj, stopHotkey, "stopHotkey");
 	loadHotkey(obj, toggleHotkey, "toggleHotkey");
+	loadHotkey(obj, newMacroHotkey, "newMacroHotkey");
 	loadHotkey(obj, upMacroSegment, "upMacroSegmentHotkey");
 	loadHotkey(obj, downMacroSegment, "downMacroSegmentHotkey");
 	loadHotkey(obj, removeMacroSegment, "removeMacroSegmentHotkey");

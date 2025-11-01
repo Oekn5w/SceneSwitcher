@@ -39,6 +39,7 @@ public:
 		INDIVIDUAL_MANUAL,
 		INDIVIDUAL_TEMPVAR,
 		JSON_STRING,
+		INDIVIDUAL_LIST_ENTRY,
 	};
 	SettingsInputMethod _settingsInputMethod =
 		SettingsInputMethod::INDIVIDUAL_MANUAL;
@@ -86,9 +87,9 @@ private slots:
 	void SelectionChanged(const SourceSetting &);
 	void ManualSettingsValueChanged();
 	void RefreshVariableSourceSelectionValue();
-	void ButtonChanged(int idx);
 	void BoundsSrcSceneChanged(const SceneSelection &);
 	void BoundsSrcSourceChanged(const SceneItemSelection &);
+	void ButtonChanged(const SourceSettingButton &);
 
 signals:
 	void HeaderInfoChanged(const QString &);
@@ -107,10 +108,10 @@ private:
 	SourceSettingSelection *_filterSettings;
 	VariableTextEdit *_settingsString;
 	QPushButton *_refreshSettingSelection;
-	QComboBox *_settingsButtons;
 	SceneSelectionWidget *_boundsSrcScene;
 	SceneItemSelectionWidget *_boundsSrcSource;
 	QLabel *_boundsSrcLabel;
+	SourceSettingsButtonSelection *_settingsButtons;
 
 	std::shared_ptr<MacroActionFilter> _entryData;
 	bool _loading = true;

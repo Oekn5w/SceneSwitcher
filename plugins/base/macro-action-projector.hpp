@@ -1,7 +1,10 @@
 #pragma once
 #include "macro-action-edit.hpp"
+#include "monitor-helpers.hpp"
+#include "regex-config.hpp"
 #include "scene-selection.hpp"
 #include "source-selection.hpp"
+#include "variable-line-edit.hpp"
 
 namespace advss {
 
@@ -19,6 +22,11 @@ public:
 	void SetMonitor(int);
 	int GetMonitor() const;
 
+	enum class Action {
+		OPEN,
+		CLOSE,
+	};
+
 	enum class Type {
 		SOURCE,
 		SCENE,
@@ -27,10 +35,13 @@ public:
 		MULTIVIEW,
 	};
 
+	Action _action = Action::OPEN;
 	Type _type = Type::SCENE;
 	SourceSelection _source;
 	SceneSelection _scene;
 	bool _fullscreen = true;
+	StringVariable _projectorWindowName = "Windowed Projector";
+	RegexConfig _regex = RegexConfig::PartialMatchRegexConfig(true);
 
 private:
 	bool MonitorSetupChanged() const;
@@ -60,21 +71,28 @@ public:
 	}
 
 private slots:
+	void ActionChanged(int value);
 	void WindowTypeChanged(int value);
 	void TypeChanged(int value);
 	void SceneChanged(const SceneSelection &);
 	void SourceChanged(const SourceSelection &);
 	void MonitorChanged(int value);
+	void ProjectorWindowNameChanged();
+	void RegexChanged(const RegexConfig &);
 
 private:
+	void SetWidgetLayout();
 	void SetWidgetVisibility();
 
-	QComboBox *_windowTypes;
+	QComboBox *_actions;
 	QComboBox *_types;
+	QComboBox *_windowTypes;
 	SceneSelectionWidget *_scenes;
 	SourceSelectionWidget *_sources;
-	QHBoxLayout *_monitorSelection;
-	QComboBox *_monitors;
+	MonitorSelectionWidget *_monitors;
+	VariableLineEdit *_projectorWindowName;
+	RegexConfigWidget *_regex;
+	QHBoxLayout *_layout;
 
 	std::shared_ptr<MacroActionProjector> _entryData;
 	bool _loading = true;

@@ -19,6 +19,8 @@ void GlobalMacroSettings::Save(obs_data_t *obj) const
 	obs_data_set_bool(data, "highlightExecuted", _highlightExecuted);
 	obs_data_set_bool(data, "highlightConditions", _highlightConditions);
 	obs_data_set_bool(data, "highlightActions", _highlightActions);
+	obs_data_set_bool(data, "newMacroCheckInParallel",
+			  _newMacroCheckInParallel);
 	obs_data_set_bool(data, "newMacroRegisterHotkey",
 			  _newMacroRegisterHotkeys);
 	obs_data_set_bool(data, "newMacroUseShortCircuitEvaluation",
@@ -41,6 +43,8 @@ void GlobalMacroSettings::Load(obs_data_t *obj)
 	_highlightExecuted = obs_data_get_bool(data, "highlightExecuted");
 	_highlightConditions = obs_data_get_bool(data, "highlightConditions");
 	_highlightActions = obs_data_get_bool(data, "highlightActions");
+	_newMacroCheckInParallel =
+		obs_data_get_bool(data, "newMacroCheckInParallel");
 	_newMacroRegisterHotkeys =
 		obs_data_get_bool(data, "newMacroRegisterHotkey");
 	_newMacroUseShortCircuitEvaluation =
@@ -62,12 +66,16 @@ MacroSettingsDialog::MacroSettingsDialog(QWidget *parent,
 		  "AdvSceneSwitcher.macroTab.highlightTrueConditions"))),
 	  _highlightActions(new QCheckBox(obs_module_text(
 		  "AdvSceneSwitcher.macroTab.highlightPerformedActions"))),
+	  _newMacroCheckInParallel(new QCheckBox(obs_module_text(
+		  "AdvSceneSwitcher.macroTab.newMacroCheckInParallel"))),
 	  _newMacroRegisterHotkeys(new QCheckBox(obs_module_text(
 		  "AdvSceneSwitcher.macroTab.newMacroRegisterHotkey"))),
 	  _newMacroUseShortCircuitEvaluation(new QCheckBox(obs_module_text(
 		  "AdvSceneSwitcher.macroTab.newMacroUseShortCircuitEvaluation"))),
 	  _saveSettingsOnMacroChange(new QCheckBox(obs_module_text(
 		  "AdvSceneSwitcher.macroTab.saveSettingsOnMacroChange"))),
+	  _currentCheckInParallel(new QCheckBox(obs_module_text(
+		  "AdvSceneSwitcher.macroTab.currentCheckInParallel"))),
 	  _currentMacroRegisterHotkeys(new QCheckBox(obs_module_text(
 		  "AdvSceneSwitcher.macroTab.currentRegisterHotkeys"))),
 	  _currentUseShortCircuitEvaluation(new QCheckBox(obs_module_text(
@@ -86,6 +94,9 @@ MacroSettingsDialog::MacroSettingsDialog(QWidget *parent,
 	  _currentInputs(new MacroInputSelection()),
 	  _currentMacroRegisterDock(new QCheckBox(obs_module_text(
 		  "AdvSceneSwitcher.macroTab.currentRegisterDock"))),
+	  _currentMacroIsStandaloneDock(new QCheckBox(obs_module_text(
+		  "AdvSceneSwitcher.macroTab.currentIsStandaloneDock"))),
+	  _currentMacroDockWindowName(new QLineEdit(this)),
 	  _currentMacroDockAddRunButton(new QCheckBox(obs_module_text(
 		  "AdvSceneSwitcher.macroTab.currentDockAddRunButton"))),
 	  _currentMacroDockAddPauseButton(new QCheckBox(obs_module_text(
@@ -106,6 +117,11 @@ MacroSettingsDialog::MacroSettingsDialog(QWidget *parent,
 	setModal(true);
 	setWindowModality(Qt::WindowModality::WindowModal);
 	setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
+
+	_newMacroCheckInParallel->setToolTip(obs_module_text(
+		"AdvSceneSwitcher.macroTab.checkInParallel.tooltip"));
+	_currentCheckInParallel->setToolTip(obs_module_text(
+		"AdvSceneSwitcher.macroTab.checkInParallel.tooltip"));
 
 	_newMacroUseShortCircuitEvaluation->setToolTip(obs_module_text(
 		"AdvSceneSwitcher.macroTab.shortCircuit.tooltip"));
@@ -146,6 +162,8 @@ MacroSettingsDialog::MacroSettingsDialog(QWidget *parent,
 		obs_module_text("AdvSceneSwitcher.macroTab.generalSettings"));
 	auto generalLayout = new QVBoxLayout;
 	generalLayout->addWidget(_saveSettingsOnMacroChange);
+	generalLayout->addWidget(_currentCheckInParallel);
+	generalLayout->addWidget(_newMacroCheckInParallel);
 	generalLayout->addWidget(_currentSkipOnStartup);
 	generalLayout->addWidget(_currentStopActionsIfNotDone);
 	generalLayout->addWidget(_currentUseShortCircuitEvaluation);
@@ -182,6 +200,15 @@ MacroSettingsDialog::MacroSettingsDialog(QWidget *parent,
 
 	int row = 0;
 	_dockLayout->addWidget(_currentMacroRegisterDock, row, 1, 1, 2);
+	row++;
+	_dockLayout->addWidget(_currentMacroIsStandaloneDock, row, 1, 1, 2);
+	row++;
+	_dockLayout->addWidget(
+		new QLabel(obs_module_text(
+			"AdvSceneSwitcher.macroTab.currentDockWindowName")),
+		row, 1);
+	_dockLayout->addWidget(_currentMacroDockWindowName, row, 2);
+	_dockWindowNameRow = row;
 	row++;
 	_dockLayout->addWidget(_currentMacroDockAddRunButton, row, 1, 1, 2);
 	row++;
@@ -237,6 +264,8 @@ MacroSettingsDialog::MacroSettingsDialog(QWidget *parent,
 
 	connect(_currentMacroRegisterDock, &QCheckBox::stateChanged, this,
 		&MacroSettingsDialog::DockEnableChanged);
+	connect(_currentMacroIsStandaloneDock, &QCheckBox::stateChanged, this,
+		&MacroSettingsDialog::IsStandaloneDockChanged);
 	connect(_currentMacroDockAddRunButton, &QCheckBox::stateChanged, this,
 		&MacroSettingsDialog::RunButtonEnableChanged);
 	connect(_currentMacroDockAddPauseButton, &QCheckBox::stateChanged, this,
@@ -273,6 +302,7 @@ MacroSettingsDialog::MacroSettingsDialog(QWidget *parent,
 	_highlightExecutedMacros->setChecked(settings._highlightExecuted);
 	_highlightConditions->setChecked(settings._highlightConditions);
 	_highlightActions->setChecked(settings._highlightActions);
+	_newMacroCheckInParallel->setChecked(settings._newMacroCheckInParallel);
 	_newMacroRegisterHotkeys->setChecked(settings._newMacroRegisterHotkeys);
 	_newMacroUseShortCircuitEvaluation->setChecked(
 		settings._newMacroUseShortCircuitEvaluation);
@@ -280,20 +310,23 @@ MacroSettingsDialog::MacroSettingsDialog(QWidget *parent,
 		settings._saveSettingsOnMacroChange);
 
 	if (!macro || macro->IsGroup()) {
-		hotkeyOptions->hide();
-
 		// General group
 		_currentSkipOnStartup->hide();
 		_currentStopActionsIfNotDone->hide();
 		_currentUseShortCircuitEvaluation->hide();
+		_currentCheckInParallel->hide();
 		SetLayoutVisible(customConditionIntervalLayout, false);
 		SetLayoutVisible(pauseStateSaveBehavorLayout, false);
+
+		// Hotkey group
+		_currentMacroRegisterHotkeys->hide();
 
 		inputOptions->hide();
 		_dockOptions->hide();
 		return;
 	}
 
+	_currentCheckInParallel->setChecked(macro->CheckInParallel());
 	_currentMacroRegisterHotkeys->setChecked(macro->PauseHotkeysEnabled());
 	_currentUseShortCircuitEvaluation->setChecked(
 		macro->ShortCircuitEvaluationEnabled());
@@ -310,55 +343,37 @@ MacroSettingsDialog::MacroSettingsDialog(QWidget *parent,
 	_currentSkipOnStartup->setChecked(macro->SkipExecOnStart());
 	_currentStopActionsIfNotDone->setChecked(macro->StopActionsIfNotDone());
 	_currentInputs->SetInputs(macro->GetInputVariables());
-	const bool dockEnabled = macro->DockEnabled();
+	const auto &dockSettings = macro->GetDockSettings();
+	const bool dockEnabled = dockSettings.DockEnabled();
 	_currentMacroRegisterDock->setChecked(dockEnabled);
-	_currentMacroDockAddRunButton->setChecked(macro->DockHasRunButton());
+	_currentMacroIsStandaloneDock->setChecked(
+		dockSettings.IsStandaloneDock());
+	_currentMacroDockWindowName->setText(
+		QString::fromStdString(dockSettings.DockWindowName()));
+	_currentMacroDockAddRunButton->setChecked(dockSettings.HasRunButton());
 	_currentMacroDockAddPauseButton->setChecked(
-		macro->DockHasPauseButton());
+		dockSettings.HasPauseButton());
 	_currentMacroDockAddStatusLabel->setChecked(
-		macro->DockHasStatusLabel());
+		dockSettings.HasStatusLabel());
 	_currentMacroDockHighlightIfConditionsTrue->setChecked(
-		macro->DockHighlightEnabled());
-	_runButtonText->setText(macro->RunButtonText());
-	_pauseButtonText->setText(macro->PauseButtonText());
-	_unpauseButtonText->setText(macro->UnpauseButtonText());
-	_conditionsTrueStatusText->setText(macro->ConditionsTrueStatusText());
-	_conditionsFalseStatusText->setText(macro->ConditionsFalseStatusText());
+		dockSettings.HighlightEnabled());
+	_runButtonText->setText(dockSettings.RunButtonText());
+	_pauseButtonText->setText(dockSettings.PauseButtonText());
+	_unpauseButtonText->setText(dockSettings.UnpauseButtonText());
+	_conditionsTrueStatusText->setText(
+		dockSettings.ConditionsTrueStatusText());
+	_conditionsFalseStatusText->setText(
+		dockSettings.ConditionsFalseStatusText());
 
-	_currentMacroDockAddRunButton->setVisible(dockEnabled);
-	_currentMacroDockAddPauseButton->setVisible(dockEnabled);
-	_currentMacroDockAddStatusLabel->setVisible(dockEnabled);
-	_currentMacroDockHighlightIfConditionsTrue->setVisible(dockEnabled);
-	SetGridLayoutRowVisible(_dockLayout, _runButtonTextRow,
-				dockEnabled && macro->DockHasRunButton());
-	SetGridLayoutRowVisible(_dockLayout, _pauseButtonTextRow,
-				dockEnabled && macro->DockHasPauseButton());
-	SetGridLayoutRowVisible(_dockLayout, _unpauseButtonTextRow,
-				dockEnabled && macro->DockHasPauseButton());
-	SetGridLayoutRowVisible(_dockLayout, _conditionsTrueTextRow,
-				dockEnabled && macro->DockHasStatusLabel());
-	SetGridLayoutRowVisible(_dockLayout, _conditionsFalseTextRow,
-				dockEnabled && macro->DockHasStatusLabel());
+	DockEnableChanged(dockEnabled);
 	MinimizeSizeOfColumn(_dockLayout, 0);
-	Resize();
 
-	// Try to set sensible initial size for the dialog window
-	QSize contentSize = contentWidget->sizeHint();
-	resize(contentSize.width() + layout->contentsMargins().left() +
-		       layout->contentsMargins().right() +
-		       dialogLayout->contentsMargins().left() +
-		       dialogLayout->contentsMargins().right() +
-		       scrollArea->verticalScrollBar()->sizeHint().width() + 20,
-	       contentSize.height() + dialogLayout->spacing() +
-		       buttonbox->sizeHint().height() +
-		       dialogLayout->contentsMargins().top() +
-		       dialogLayout->contentsMargins().bottom() +
-		       scrollArea->horizontalScrollBar()->sizeHint().height() +
-		       20);
+	Resize();
 }
 
 void MacroSettingsDialog::DockEnableChanged(int enabled)
 {
+	_currentMacroIsStandaloneDock->setVisible(enabled);
 	_currentMacroDockAddRunButton->setVisible(enabled);
 	_currentMacroDockAddPauseButton->setVisible(enabled);
 	_currentMacroDockAddStatusLabel->setVisible(enabled);
@@ -379,6 +394,12 @@ void MacroSettingsDialog::DockEnableChanged(int enabled)
 		_dockLayout, _conditionsFalseTextRow,
 		enabled && _currentMacroDockAddStatusLabel->isChecked());
 
+	Resize();
+}
+
+void MacroSettingsDialog::IsStandaloneDockChanged(int enabled)
+{
+	SetGridLayoutRowVisible(_dockLayout, _dockWindowNameRow, !enabled);
 	Resize();
 }
 
@@ -431,6 +452,8 @@ bool MacroSettingsDialog::AskForSettings(QWidget *parent,
 	userInput._highlightConditions =
 		dialog._highlightConditions->isChecked();
 	userInput._highlightActions = dialog._highlightActions->isChecked();
+	userInput._newMacroCheckInParallel =
+		dialog._newMacroCheckInParallel->isChecked();
 	userInput._newMacroRegisterHotkeys =
 		dialog._newMacroRegisterHotkeys->isChecked();
 	userInput._newMacroUseShortCircuitEvaluation =
@@ -441,6 +464,7 @@ bool MacroSettingsDialog::AskForSettings(QWidget *parent,
 		return true;
 	}
 
+	macro->SetCheckInParallel(dialog._currentCheckInParallel->isChecked());
 	macro->EnablePauseHotkeys(
 		dialog._currentMacroRegisterHotkeys->isChecked());
 	macro->SetShortCircuitEvaluation(
@@ -456,23 +480,30 @@ bool MacroSettingsDialog::AskForSettings(QWidget *parent,
 	macro->SetSkipExecOnStart(dialog._currentSkipOnStartup->isChecked());
 	macro->SetStopActionsIfNotDone(
 		dialog._currentStopActionsIfNotDone->isChecked());
-	macro->EnableDock(dialog._currentMacroRegisterDock->isChecked());
-	macro->SetDockHasRunButton(
+
+	auto &dockSettings = macro->GetDockSettings();
+	dockSettings.EnableDock(dialog._currentMacroRegisterDock->isChecked());
+	dockSettings.SetIsStandaloneDock(
+		dialog._currentMacroIsStandaloneDock->isChecked());
+	dockSettings.SetDockWindowName(
+		dialog._currentMacroDockWindowName->text().toStdString());
+	dockSettings.SetHasRunButton(
 		dialog._currentMacroDockAddRunButton->isChecked());
-	macro->SetDockHasPauseButton(
+	dockSettings.SetHasPauseButton(
 		dialog._currentMacroDockAddPauseButton->isChecked());
-	macro->SetDockHasStatusLabel(
+	dockSettings.SetHasStatusLabel(
 		dialog._currentMacroDockAddStatusLabel->isChecked());
-	macro->SetHighlightEnable(
+	dockSettings.SetHighlightEnable(
 		dialog._currentMacroDockHighlightIfConditionsTrue->isChecked());
-	macro->SetRunButtonText(dialog._runButtonText->text().toStdString());
-	macro->SetPauseButtonText(
+	dockSettings.SetRunButtonText(
+		dialog._runButtonText->text().toStdString());
+	dockSettings.SetPauseButtonText(
 		dialog._pauseButtonText->text().toStdString());
-	macro->SetUnpauseButtonText(
+	dockSettings.SetUnpauseButtonText(
 		dialog._unpauseButtonText->text().toStdString());
-	macro->SetConditionsTrueStatusText(
+	dockSettings.SetConditionsTrueStatusText(
 		dialog._conditionsTrueStatusText->text().toStdString());
-	macro->SetConditionsFalseStatusText(
+	dockSettings.SetConditionsFalseStatusText(
 		dialog._conditionsFalseStatusText->text().toStdString());
 	macro->SetInputVariables(dialog._currentInputs->GetInputs());
 	return true;

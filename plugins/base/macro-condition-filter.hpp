@@ -32,6 +32,7 @@ public:
 		SETTINGS_CHANGED,
 		INDIVIDUAL_SETTING_MATCH,
 		INDIVIDUAL_SETTING_CHANGED,
+		INDIVIDUAL_SETTING_LIST_ENTRY_MATCH,
 	};
 	void SetCondition(Condition);
 	Condition GetCondition() const { return _condition; }
@@ -41,13 +42,14 @@ public:
 	StringVariable _settings = "";
 	RegexConfig _regex;
 	SourceSetting _setting;
+	bool _includeDefaults = false;
 
 private:
 	void SetupTempVars();
 	bool CheckConditionHelper(const OBSWeakSource &);
 
 	Condition _condition = Condition::ENABLED;
-	std::string _currentSettings;
+	std::optional<std::string> _currentSettings;
 	std::string _currentSettingsValue;
 
 	static bool _registered;
@@ -79,6 +81,7 @@ private slots:
 	void RegexChanged(const RegexConfig &);
 	void SettingSelectionChanged(const SourceSetting &);
 	void RefreshVariableSourceSelectionValue();
+	void IncludeDefaultsChanged(int);
 signals:
 	void HeaderInfoChanged(const QString &);
 
@@ -93,6 +96,7 @@ private:
 	RegexConfigWidget *_regex;
 	SourceSettingSelection *_settingSelection;
 	QPushButton *_refreshSettingSelection;
+	QCheckBox *_includeDefaults;
 
 	std::shared_ptr<MacroConditionFilter> _entryData;
 	bool _loading = true;

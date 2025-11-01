@@ -1,12 +1,17 @@
 #include "macro-action-variable.hpp"
-#include "advanced-scene-switcher.hpp"
+#include "help-icon.hpp"
+#include "json-helpers.hpp"
 #include "layout-helpers.hpp"
-#include "math-helpers.hpp"
 #include "macro-condition-edit.hpp"
+#include "macro-signals.hpp"
+#include "math-helpers.hpp"
 #include "macro.hpp"
 #include "non-modal-dialog.hpp"
 #include "source-helpers.hpp"
+#include "ui-helpers.hpp"
 #include "utility.hpp"
+
+#include <random>
 
 namespace advss {
 
@@ -16,66 +21,6 @@ bool MacroActionVariable::_registered = MacroActionFactory::Register(
 	MacroActionVariable::id,
 	{MacroActionVariable::Create, MacroActionVariableEdit::Create,
 	 "AdvSceneSwitcher.action.variable"});
-
-const static std::map<MacroActionVariable::Type, std::string> actionTypes = {
-	{MacroActionVariable::Type::SET_FIXED_VALUE,
-	 "AdvSceneSwitcher.action.variable.type.set"},
-	{MacroActionVariable::Type::APPEND,
-	 "AdvSceneSwitcher.action.variable.type.append"},
-	{MacroActionVariable::Type::APPEND_VAR,
-	 "AdvSceneSwitcher.action.variable.type.appendVar"},
-	{MacroActionVariable::Type::INCREMENT,
-	 "AdvSceneSwitcher.action.variable.type.increment"},
-	{MacroActionVariable::Type::DECREMENT,
-	 "AdvSceneSwitcher.action.variable.type.decrement"},
-	{MacroActionVariable::Type::SET_CONDITION_VALUE,
-	 "AdvSceneSwitcher.action.variable.type.setConditionValue"},
-	{MacroActionVariable::Type::SET_ACTION_VALUE,
-	 "AdvSceneSwitcher.action.variable.type.setActionValue"},
-	{MacroActionVariable::Type::ROUND_TO_INT,
-	 "AdvSceneSwitcher.action.variable.type.roundToInt"},
-	{MacroActionVariable::Type::SUBSTRING,
-	 "AdvSceneSwitcher.action.variable.type.subString"},
-	{MacroActionVariable::Type::FIND_AND_REPLACE,
-	 "AdvSceneSwitcher.action.variable.type.findAndReplace"},
-	{MacroActionVariable::Type::MATH_EXPRESSION,
-	 "AdvSceneSwitcher.action.variable.type.mathExpression"},
-	{MacroActionVariable::Type::USER_INPUT,
-	 "AdvSceneSwitcher.action.variable.type.askForValue"},
-	{MacroActionVariable::Type::ENV_VARIABLE,
-	 "AdvSceneSwitcher.action.variable.type.environmentVariable"},
-	{MacroActionVariable::Type::SCENE_ITEM_COUNT,
-	 "AdvSceneSwitcher.action.variable.type.sceneItemCount"},
-	{MacroActionVariable::Type::STRING_LENGTH,
-	 "AdvSceneSwitcher.action.variable.type.stringLength"},
-	{MacroActionVariable::Type::EXTRACT_JSON,
-	 "AdvSceneSwitcher.action.variable.type.extractJson"},
-	{MacroActionVariable::Type::SET_TO_TEMPVAR,
-	 "AdvSceneSwitcher.action.variable.type.setToTempvar"},
-	{MacroActionVariable::Type::SCENE_ITEM_NAME,
-	 "AdvSceneSwitcher.action.variable.type.sceneItemName"},
-	{MacroActionVariable::Type::PAD,
-	 "AdvSceneSwitcher.action.variable.type.padValue"},
-	{MacroActionVariable::Type::TRUNCATE,
-	 "AdvSceneSwitcher.action.variable.type.truncateValue"},
-	{MacroActionVariable::Type::SWAP_VALUES,
-	 "AdvSceneSwitcher.action.variable.type.swapValues"},
-	{MacroActionVariable::Type::TRIM,
-	 "AdvSceneSwitcher.action.variable.type.trim"},
-	{MacroActionVariable::Type::CHANGE_CASE,
-	 "AdvSceneSwitcher.action.variable.type.changeCase"},
-};
-
-const static std::map<MacroActionVariable::CaseType, std::string> caseTypes = {
-	{MacroActionVariable::CaseType::LOWER_CASE,
-	 "AdvSceneSwitcher.action.variable.case.type.lowerCase"},
-	{MacroActionVariable::CaseType::UPPER_CASE,
-	 "AdvSceneSwitcher.action.variable.case.type.upperCase"},
-	{MacroActionVariable::CaseType::CAPITALIZED,
-	 "AdvSceneSwitcher.action.variable.case.type.capitalized"},
-	{MacroActionVariable::CaseType::START_CASE,
-	 "AdvSceneSwitcher.action.variable.case.type.startCase"},
-};
 
 static void apppend(Variable &var, const std::string &value)
 {
@@ -253,6 +198,27 @@ void MacroActionVariable::SetToSceneItemName(Variable *var)
 	var->SetValue(data.name);
 }
 
+void MacroActionVariable::GenerateRandomNumber(Variable *var)
+{
+	static std::random_device rd;
+	static std::mt19937 gen(rd());
+
+	double start = _randomNumberStart;
+	double end = _randomNumberEnd;
+
+	if (start > end) {
+		std::swap(start, end);
+	}
+
+	if (_generateInteger) {
+		std::uniform_int_distribution<int> dis(start, end);
+		var->SetValue(dis(gen));
+	} else {
+		std::uniform_real_distribution<double> dis(start, end);
+		var->SetValue(dis(gen));
+	}
+}
+
 struct AskForInputParams {
 	AskForInputParams(const QString &prompt_, const QString &placeholder_)
 		: prompt(prompt_),
@@ -313,14 +279,14 @@ bool MacroActionVariable::PerformAction()
 		return true;
 	}
 
-	switch (_type) {
-	case Type::SET_FIXED_VALUE:
+	switch (_action) {
+	case Action::SET_VALUE:
 		var->SetValue(_strValue);
 		break;
-	case Type::APPEND:
+	case Action::APPEND:
 		apppend(*var, _strValue);
 		break;
-	case Type::APPEND_VAR: {
+	case Action::APPEND_VAR: {
 		auto var2 = _variable2.lock();
 		if (!var2) {
 			return true;
@@ -328,14 +294,14 @@ bool MacroActionVariable::PerformAction()
 		apppend(*var, var2->Value());
 		break;
 	}
-	case Type::INCREMENT:
+	case Action::INCREMENT:
 		modifyNumValue(*var, _numValue.GetValue(), true);
 		break;
-	case Type::DECREMENT:
+	case Action::DECREMENT:
 		modifyNumValue(*var, _numValue.GetValue(), false);
 		break;
-	case Type::SET_CONDITION_VALUE:
-	case Type::SET_ACTION_VALUE: {
+	case Action::SET_CONDITION_VALUE:
+	case Action::SET_ACTION_VALUE: {
 		auto m = GetMacro();
 		if (!m) {
 			return true;
@@ -350,7 +316,7 @@ bool MacroActionVariable::PerformAction()
 		var->SetValue(segment->GetVariableValue());
 		break;
 	}
-	case Type::ROUND_TO_INT: {
+	case Action::ROUND_TO_INT: {
 		auto curValue = var->DoubleValue();
 		if (!curValue.has_value()) {
 			return true;
@@ -358,7 +324,7 @@ bool MacroActionVariable::PerformAction()
 		var->SetValue(std::to_string(int(std::round(*curValue))));
 		return true;
 	}
-	case Type::SUBSTRING: {
+	case Action::SUBSTRING: {
 		if (_subStringRegex.Enabled()) {
 			HandleRegexSubString(var.get());
 			return true;
@@ -366,15 +332,15 @@ bool MacroActionVariable::PerformAction()
 		HandleIndexSubString(var.get());
 		return true;
 	}
-	case Type::FIND_AND_REPLACE: {
+	case Action::FIND_AND_REPLACE: {
 		HandleFindAndReplace(var.get());
 		return true;
 	}
-	case Type::MATH_EXPRESSION: {
+	case Action::MATH_EXPRESSION: {
 		HandleMathExpression(var.get());
 		return true;
 	}
-	case Type::USER_INPUT: {
+	case Action::USER_INPUT: {
 		auto params = std::make_shared<AskForInputParams>(
 			_useCustomPrompt
 				? QString::fromStdString(_inputPrompt)
@@ -399,22 +365,22 @@ bool MacroActionVariable::PerformAction()
 		var->SetValue(*params->result);
 		return true;
 	}
-	case Type::ENV_VARIABLE: {
+	case Action::ENV_VARIABLE: {
 		auto value = std::getenv(_envVariableName.c_str());
 		if (value) {
 			var->SetValue(value);
 		}
 		return true;
 	}
-	case Type::SCENE_ITEM_COUNT: {
+	case Action::SCENE_ITEM_COUNT: {
 		var->SetValue(GetSceneItemCount(_scene.GetScene(false)));
 		return true;
 	}
-	case Type::STRING_LENGTH: {
+	case Action::STRING_LENGTH: {
 		var->SetValue(std::string(_strValue).length());
 		return true;
 	}
-	case Type::EXTRACT_JSON: {
+	case Action::EXTRACT_JSON: {
 		auto value = GetJsonField(var->Value(), _strValue);
 		if (!value.has_value()) {
 			return true;
@@ -422,7 +388,23 @@ bool MacroActionVariable::PerformAction()
 		var->SetValue(*value);
 		return true;
 	}
-	case Type::SET_TO_TEMPVAR: {
+	case Action::QUERY_JSON: {
+		auto value = QueryJson(var->Value(), _jsonQuery);
+		if (!value.has_value()) {
+			return true;
+		}
+		var->SetValue(*value);
+		return true;
+	}
+	case Action::ARRAY_JSON: {
+		auto value = AccessJsonArrayIndex(var->Value(), _jsonIndex);
+		if (!value.has_value()) {
+			return true;
+		}
+		var->SetValue(*value);
+		return true;
+	}
+	case Action::SET_TO_TEMPVAR: {
 		auto tempVar = _tempVar.GetTempVariable(GetMacro());
 		if (!tempVar) {
 			return true;
@@ -434,18 +416,18 @@ bool MacroActionVariable::PerformAction()
 		var->SetValue(*value);
 		return true;
 	}
-	case Type::SCENE_ITEM_NAME:
+	case Action::SCENE_ITEM_NAME:
 		SetToSceneItemName(var.get());
 		return true;
-	case Type::PAD:
+	case Action::PAD:
 		var->SetValue(pad(var->Value(), _direction, _stringLength,
 				  _paddingChar));
 		return true;
-	case Type::TRUNCATE:
+	case Action::TRUNCATE:
 		var->SetValue(
 			truncate(var->Value(), _direction, _stringLength));
 		return true;
-	case Type::SWAP_VALUES: {
+	case Action::SWAP_VALUES: {
 		auto var2 = _variable2.lock();
 		if (!var2) {
 			return true;
@@ -456,14 +438,17 @@ bool MacroActionVariable::PerformAction()
 		var2->SetValue(tempValue);
 		return true;
 	}
-	case Type::TRIM: {
+	case Action::TRIM: {
 		var->SetValue(QString::fromStdString(var->Value())
 				      .trimmed()
 				      .toStdString());
 		return true;
 	}
-	case Type::CHANGE_CASE:
+	case Action::CHANGE_CASE:
 		HandleCaseChange(var.get());
+		return true;
+	case Action::RANDOM_NUMBER:
+		GenerateRandomNumber(var.get());
 		return true;
 	}
 
@@ -479,7 +464,7 @@ bool MacroActionVariable::Save(obs_data_t *obj) const
 			    GetWeakVariableName(_variable2).c_str());
 	_strValue.Save(obj, "strValue");
 	_numValue.Save(obj, "numValue");
-	obs_data_set_int(obj, "condition", static_cast<int>(_type));
+	obs_data_set_int(obj, "condition", static_cast<int>(_action));
 	obs_data_set_int(obj, "segmentIdx", GetSegmentIndexValue());
 	_subStringStart.Save(obj, "subStringStart");
 	_subStringSize.Save(obj, "subStringSize");
@@ -496,12 +481,17 @@ bool MacroActionVariable::Save(obs_data_t *obj) const
 	_inputPlaceholder.Save(obj, "inputPlaceholder");
 	_envVariableName.Save(obj, "environmentVariableName");
 	_scene.Save(obj);
-	_tempVar.Save(obj);
+	_tempVar.Save(obj, GetMacro());
 	_sceneItemIndex.Save(obj, "sceneItemIndex");
 	obs_data_set_int(obj, "direction", static_cast<int>(_direction));
 	_stringLength.Save(obj, "stringLength");
 	obs_data_set_int(obj, "paddingChar", _paddingChar);
 	obs_data_set_int(obj, "caseType", static_cast<int>(_caseType));
+	_randomNumberStart.Save(obj, "randomNumberStart");
+	_randomNumberEnd.Save(obj, "randomNumberEnd");
+	obs_data_set_bool(obj, "generateInteger", _generateInteger);
+	_jsonQuery.Save(obj, "jsonQuery");
+	_jsonIndex.Save(obj, "jsonIndex");
 
 	obs_data_set_int(obj, "version", 1);
 
@@ -516,7 +506,7 @@ bool MacroActionVariable::Load(obs_data_t *obj)
 	_variable2 = GetWeakVariableByName(
 		obs_data_get_string(obj, "variable2Name"));
 	_strValue.Load(obj, "strValue");
-	_type = static_cast<Type>(obs_data_get_int(obj, "condition"));
+	_action = static_cast<Action>(obs_data_get_int(obj, "condition"));
 	_segmentIdxLoadValue = obs_data_get_int(obj, "segmentIdx");
 	_subStringRegex.Load(obj);
 	_regexPattern = obs_data_get_string(obj, "regexPattern");
@@ -554,6 +544,12 @@ bool MacroActionVariable::Load(obs_data_t *obj)
 		_subStringSize.Load(obj, "subStringSize");
 		_regexMatchIdx.Load(obj, "regexMatchIdx");
 	}
+
+	_randomNumberStart.Load(obj, "randomNumberStart");
+	_randomNumberEnd.Load(obj, "randomNumberEnd");
+	_generateInteger = obs_data_get_bool(obj, "generateInteger");
+	_jsonQuery.Load(obj, "jsonQuery");
+	_jsonIndex.Load(obj, "jsonIndex");
 
 	return true;
 }
@@ -595,11 +591,11 @@ void MacroActionVariable::SetSegmentIndexValue(int value)
 	}
 
 	std::shared_ptr<MacroSegment> segment;
-	if (_type == Type::SET_CONDITION_VALUE) {
+	if (_action == Action::SET_CONDITION_VALUE) {
 		if (value < (int)m->Conditions().size()) {
 			segment = m->Conditions().at(value);
 		}
-	} else if (_type == Type::SET_ACTION_VALUE) {
+	} else if (_action == Action::SET_ACTION_VALUE) {
 		if (value < (int)m->Actions().size()) {
 			segment = m->Actions().at(value);
 		}
@@ -623,14 +619,14 @@ int MacroActionVariable::GetSegmentIndexValue() const
 		return -1;
 	}
 
-	if (_type == Type::SET_CONDITION_VALUE) {
+	if (_action == Action::SET_CONDITION_VALUE) {
 		auto it = std::find(m->Conditions().begin(),
 				    m->Conditions().end(), segment);
 		if (it != m->Conditions().end()) {
 			return std::distance(m->Conditions().begin(), it);
 		}
 		return -1;
-	} else if (_type == Type::SET_ACTION_VALUE) {
+	} else if (_action == Action::SET_ACTION_VALUE) {
 		auto it = std::find(m->Actions().begin(), m->Actions().end(),
 				    segment);
 		if (it != m->Actions().end()) {
@@ -653,6 +649,8 @@ void MacroActionVariable::ResolveVariablesToFixedValues()
 	_envVariableName.ResolveVariables();
 	_scene.ResolveVariables();
 	_sceneItemIndex.ResolveVariables();
+	_jsonQuery.ResolveVariables();
+	_jsonIndex.ResolveVariables();
 }
 
 void MacroActionVariable::DecrementCurrentSegmentVariableRef()
@@ -665,16 +663,105 @@ void MacroActionVariable::DecrementCurrentSegmentVariableRef()
 	DecrementVariableRef(segment.get());
 }
 
-static inline void populateTypeSelection(QComboBox *list)
+static inline void populateActionSelection(QComboBox *list)
 {
-	for (const auto &[action, name] : actionTypes) {
-		list->addItem(obs_module_text(name.c_str()),
-			      static_cast<int>(action));
+	static const std::vector<std::pair<
+		std::variant<MacroActionVariable::Action, bool>, std::string>>
+		actions = {
+			{MacroActionVariable::Action::SET_VALUE,
+			 "AdvSceneSwitcher.action.variable.type.set"},
+			{MacroActionVariable::Action::APPEND,
+			 "AdvSceneSwitcher.action.variable.type.append"},
+			{MacroActionVariable::Action::PAD,
+			 "AdvSceneSwitcher.action.variable.type.padValue"},
+			{MacroActionVariable::Action::TRUNCATE,
+			 "AdvSceneSwitcher.action.variable.type.truncateValue"},
+			{MacroActionVariable::Action::SUBSTRING,
+			 "AdvSceneSwitcher.action.variable.type.subString"},
+			{MacroActionVariable::Action::FIND_AND_REPLACE,
+			 "AdvSceneSwitcher.action.variable.type.findAndReplace"},
+			{MacroActionVariable::Action::STRING_LENGTH,
+			 "AdvSceneSwitcher.action.variable.type.stringLength"},
+			{MacroActionVariable::Action::TRIM,
+			 "AdvSceneSwitcher.action.variable.type.trim"},
+			{MacroActionVariable::Action::CHANGE_CASE,
+			 "AdvSceneSwitcher.action.variable.type.changeCase"},
+			{true, ""}, // Separator
+
+			{MacroActionVariable::Action::EXTRACT_JSON,
+			 "AdvSceneSwitcher.action.variable.type.extractJsonField"},
+			{MacroActionVariable::Action::QUERY_JSON,
+			 "AdvSceneSwitcher.action.variable.type.queryJson"},
+			{MacroActionVariable::Action::ARRAY_JSON,
+			 "AdvSceneSwitcher.action.variable.type.accessJsonArray"},
+			{true, ""}, // Separator
+
+			{MacroActionVariable::Action::SET_TO_TEMPVAR,
+			 "AdvSceneSwitcher.action.variable.type.setToTempvar"},
+			{MacroActionVariable::Action::SET_CONDITION_VALUE,
+			 "AdvSceneSwitcher.action.variable.type.setConditionValue"},
+			{MacroActionVariable::Action::SET_ACTION_VALUE,
+			 "AdvSceneSwitcher.action.variable.type.setActionValue"},
+			{true, ""}, // Separator
+
+			{MacroActionVariable::Action::MATH_EXPRESSION,
+			 "AdvSceneSwitcher.action.variable.type.mathExpression"},
+			{MacroActionVariable::Action::INCREMENT,
+			 "AdvSceneSwitcher.action.variable.type.increment"},
+			{MacroActionVariable::Action::DECREMENT,
+			 "AdvSceneSwitcher.action.variable.type.decrement"},
+			{MacroActionVariable::Action::ROUND_TO_INT,
+			 "AdvSceneSwitcher.action.variable.type.roundToInt"},
+			{MacroActionVariable::Action::RANDOM_NUMBER,
+			 "AdvSceneSwitcher.action.variable.type.randomNumber"},
+			{true, ""}, // Separator
+
+			{MacroActionVariable::Action::USER_INPUT,
+			 "AdvSceneSwitcher.action.variable.type.askForValue"},
+			{MacroActionVariable::Action::ENV_VARIABLE,
+			 "AdvSceneSwitcher.action.variable.type.environmentVariable"},
+			{true, ""}, // Separator
+
+			{MacroActionVariable::Action::SCENE_ITEM_NAME,
+			 "AdvSceneSwitcher.action.variable.type.sceneItemName"},
+			{MacroActionVariable::Action::SCENE_ITEM_COUNT,
+			 "AdvSceneSwitcher.action.variable.type.sceneItemCount"},
+			{true, ""}, // Separator
+
+			{MacroActionVariable::Action::SWAP_VALUES,
+			 "AdvSceneSwitcher.action.variable.type.swapValues"},
+			{MacroActionVariable::Action::APPEND_VAR,
+			 "AdvSceneSwitcher.action.variable.type.appendVar"},
+
+		};
+
+	for (const auto &[action, name] : actions) {
+		if (std::holds_alternative<bool>(action)) {
+			list->insertSeparator(actions.size());
+			continue;
+		}
+
+		list->addItem(
+			obs_module_text(name.c_str()),
+			static_cast<int>(
+				std::get<MacroActionVariable::Action>(action)));
 	}
 }
 
 static inline void populateCaseTypeSelection(QComboBox *list)
 {
+	const static std::map<MacroActionVariable::CaseType, std::string>
+		caseTypes = {
+			{MacroActionVariable::CaseType::LOWER_CASE,
+			 "AdvSceneSwitcher.action.variable.case.type.lowerCase"},
+			{MacroActionVariable::CaseType::UPPER_CASE,
+			 "AdvSceneSwitcher.action.variable.case.type.upperCase"},
+			{MacroActionVariable::CaseType::CAPITALIZED,
+			 "AdvSceneSwitcher.action.variable.case.type.capitalized"},
+			{MacroActionVariable::CaseType::START_CASE,
+			 "AdvSceneSwitcher.action.variable.case.type.startCase"},
+		};
+
 	for (const auto &[type, name] : caseTypes) {
 		list->addItem(obs_module_text(name.c_str()),
 			      static_cast<int>(type));
@@ -734,6 +821,19 @@ MacroActionVariableEdit::MacroActionVariableEdit(
 	  _stringLength(new VariableSpinBox(this)),
 	  _paddingCharSelection(new SingleCharSelection()),
 	  _caseType(new FilterComboBox(this)),
+	  _randomNumberStart(new VariableDoubleSpinBox(this)),
+	  _randomNumberEnd(new VariableDoubleSpinBox(this)),
+	  _generateInteger(new QCheckBox(
+		  obs_module_text(
+			  "AdvSceneSwitcher.action.variable.generateInteger"),
+		  this)),
+	  _randomLayout(new QVBoxLayout()),
+	  _jsonQuery(new VariableLineEdit(this)),
+	  _jsonQueryHelp(new HelpIcon(
+		  obs_module_text(
+			  "AdvSceneSwitcher.action.variable.type.queryJson.info"),
+		  this)),
+	  _jsonIndex(new VariableSpinBox(this)),
 	  _entryLayout(new QHBoxLayout())
 {
 	_numValue->setMinimum(-9999999999);
@@ -756,9 +856,14 @@ MacroActionVariableEdit::MacroActionVariableEdit(
 				    QSizePolicy::Preferred);
 	_sceneItemIndex->setMinimum(1);
 	_stringLength->setMaximum(999);
-	populateTypeSelection(_actions);
+	populateActionSelection(_actions);
 	populateDirectionSelection(_direction);
 	populateCaseTypeSelection(_caseType);
+	_randomNumberStart->setMinimum(-9999999999);
+	_randomNumberStart->setMaximum(9999999999);
+	_randomNumberEnd->setMinimum(-9999999999);
+	_randomNumberEnd->setMaximum(9999999999);
+	_jsonIndex->setMaximum(999);
 
 	QWidget::connect(_variables, SIGNAL(SelectionChanged(const QString &)),
 			 this, SLOT(VariableChanged(const QString &)));
@@ -775,7 +880,8 @@ MacroActionVariableEdit::MacroActionVariableEdit(
 	QWidget::connect(_segmentIdx,
 			 SIGNAL(SelectionChanged(const IntVariable &)), this,
 			 SLOT(SegmentIndexChanged(const IntVariable &)));
-	QWidget::connect(window(), SIGNAL(MacroSegmentOrderChanged()), this,
+	QWidget::connect(MacroSignalManager::Instance(),
+			 SIGNAL(SegmentOrderChanged()), this,
 			 SLOT(MacroSegmentOrderChanged()));
 	QWidget::connect(
 		_subStringStart,
@@ -833,6 +939,24 @@ MacroActionVariableEdit::MacroActionVariableEdit(
 			 SLOT(CharSelectionChanged(const QString &)));
 	QWidget::connect(_caseType, SIGNAL(currentIndexChanged(int)), this,
 			 SLOT(CaseTypeChanged(int)));
+	QWidget::connect(
+		_randomNumberStart,
+		SIGNAL(NumberVariableChanged(const NumberVariable<double> &)),
+		this,
+		SLOT(RandomNumberStartChanged(const NumberVariable<double> &)));
+	QWidget::connect(
+		_randomNumberEnd,
+		SIGNAL(NumberVariableChanged(const NumberVariable<double> &)),
+		this,
+		SLOT(RandomNumberEndChanged(const NumberVariable<double> &)));
+	QWidget::connect(_generateInteger, SIGNAL(stateChanged(int)), this,
+			 SLOT(GenerateIntegerChanged(int)));
+	QWidget::connect(_jsonQuery, SIGNAL(editingFinished()), this,
+			 SLOT(JsonQueryChanged()));
+	QWidget::connect(
+		_jsonIndex,
+		SIGNAL(NumberVariableChanged(const NumberVariable<int> &)),
+		this, SLOT(JsonIndexChanged(const NumberVariable<int> &)));
 
 	const std::unordered_map<std::string, QWidget *> widgetPlaceholders = {
 		{"{{variables}}", _variables},
@@ -861,34 +985,48 @@ MacroActionVariableEdit::MacroActionVariableEdit(
 		{"{{stringLength}}", _stringLength},
 		{"{{paddingCharSelection}}", _paddingCharSelection},
 		{"{{caseType}}", _caseType},
+		{"{{randomNumberStart}}", _randomNumberStart},
+		{"{{randomNumberEnd}}", _randomNumberEnd},
+		{"{{generateInteger}}", _generateInteger},
+		{"{{jsonQuery}}", _jsonQuery},
+		{"{{jsonQueryHelp}}", _jsonQueryHelp},
+		{"{{jsonIndex}}", _jsonIndex},
 	};
-	PlaceWidgets(
-		obs_module_text("AdvSceneSwitcher.action.variable.entry.other"),
-		_entryLayout, widgetPlaceholders);
+	PlaceWidgets(obs_module_text(
+			     "AdvSceneSwitcher.action.variable.layout.other"),
+		     _entryLayout, widgetPlaceholders);
 
 	PlaceWidgets(
 		obs_module_text(
-			"AdvSceneSwitcher.action.variable.entry.substringIndex"),
+			"AdvSceneSwitcher.action.variable.layout.substringIndex"),
 		_subStringIndexEntryLayout, widgetPlaceholders);
 
 	PlaceWidgets(
 		obs_module_text(
-			"AdvSceneSwitcher.action.variable.entry.substringRegex"),
+			"AdvSceneSwitcher.action.variable.layout.substringRegex"),
 		_subStringRegexEntryLayout, widgetPlaceholders);
 
 	PlaceWidgets(
 		obs_module_text(
-			"AdvSceneSwitcher.action.variable.entry.findAndReplace"),
+			"AdvSceneSwitcher.action.variable.layout.findAndReplace"),
 		_findReplaceLayout, widgetPlaceholders, false);
 
 	PlaceWidgets(
 		obs_module_text(
-			"AdvSceneSwitcher.action.variable.entry.userInput.customPrompt"),
+			"AdvSceneSwitcher.action.variable.layout.userInput.customPrompt"),
 		_promptLayout, widgetPlaceholders);
 	PlaceWidgets(
 		obs_module_text(
-			"AdvSceneSwitcher.action.variable.entry.userInput.placeholder"),
+			"AdvSceneSwitcher.action.variable.layout.userInput.placeholder"),
 		_placeholderLayout, widgetPlaceholders);
+
+	auto randomLayout = new QHBoxLayout();
+	PlaceWidgets(
+		obs_module_text(
+			"AdvSceneSwitcher.action.variable.layout.randomNumber"),
+		randomLayout, widgetPlaceholders);
+	_randomLayout->addLayout(randomLayout);
+	_randomLayout->addWidget(_generateInteger);
 
 	auto regexConfigLayout = new QHBoxLayout;
 	regexConfigLayout->addWidget(_substringRegex);
@@ -908,6 +1046,7 @@ MacroActionVariableEdit::MacroActionVariableEdit(
 	layout->addWidget(_mathExpressionResult);
 	layout->addLayout(_promptLayout);
 	layout->addLayout(_placeholderLayout);
+	layout->addLayout(_randomLayout);
 	setLayout(layout);
 
 	_entryData = entryData;
@@ -929,14 +1068,14 @@ void MacroActionVariableEdit::UpdateEntryData()
 	_variables->SetVariable(_entryData->_variable);
 	_variables2->SetVariable(_entryData->_variable2);
 	_actions->setCurrentIndex(
-		_actions->findData(static_cast<int>(_entryData->_type)));
+		_actions->findData(static_cast<int>(_entryData->_action)));
 	_strValue->setPlainText(_entryData->_strValue);
 	_numValue->SetValue(_entryData->_numValue);
 	_segmentIdx->SetValue(_entryData->GetSegmentIndexValue() + 1);
 	_segmentIdx->SetMacro(_entryData->GetMacro());
 	_segmentIdx->SetType(
-		_entryData->_type ==
-				MacroActionVariable::Type::SET_CONDITION_VALUE
+		_entryData->_action ==
+				MacroActionVariable::Action::SET_CONDITION_VALUE
 			? MacroSegmentSelection::Type::CONDITION
 			: MacroSegmentSelection::Type::ACTION);
 	_subStringStart->SetValue(_entryData->_subStringStart);
@@ -963,17 +1102,18 @@ void MacroActionVariableEdit::UpdateEntryData()
 		QChar::fromLatin1(_entryData->_paddingChar));
 	_caseType->setCurrentIndex(
 		_caseType->findData(static_cast<int>(_entryData->_caseType)));
+	_randomNumberStart->SetValue(_entryData->_randomNumberStart);
+	_randomNumberEnd->SetValue(_entryData->_randomNumberEnd);
+	_generateInteger->setChecked(_entryData->_generateInteger);
+	_jsonQuery->setText(_entryData->_jsonQuery);
+	_jsonIndex->SetValue(_entryData->_jsonIndex);
 
 	SetWidgetVisibility();
 }
 
 void MacroActionVariableEdit::VariableChanged(const QString &text)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_variable = GetWeakVariableByQString(text);
 	emit HeaderInfoChanged(
 		QString::fromStdString(_entryData->GetShortDesc()));
@@ -981,11 +1121,7 @@ void MacroActionVariableEdit::VariableChanged(const QString &text)
 
 void MacroActionVariableEdit::Variable2Changed(const QString &text)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_variable2 = GetWeakVariableByQString(text);
 }
 
@@ -996,13 +1132,14 @@ void MacroActionVariableEdit::ActionChanged(int idx)
 	}
 
 	auto lock = LockContext();
-	_entryData->_type = static_cast<MacroActionVariable::Type>(
+	_entryData->_action = static_cast<MacroActionVariable::Action>(
 		_actions->itemData(idx).toInt());
 
-	if (_entryData->_type == MacroActionVariable::Type::SET_ACTION_VALUE) {
+	if (_entryData->_action ==
+	    MacroActionVariable::Action::SET_ACTION_VALUE) {
 		_segmentIdx->SetType(MacroSegmentSelection::Type::ACTION);
-	} else if (_entryData->_type ==
-		   MacroActionVariable::Type::SET_CONDITION_VALUE) {
+	} else if (_entryData->_action ==
+		   MacroActionVariable::Action::SET_CONDITION_VALUE) {
 		_segmentIdx->SetType(MacroSegmentSelection::Type::CONDITION);
 	}
 	SetWidgetVisibility();
@@ -1010,11 +1147,7 @@ void MacroActionVariableEdit::ActionChanged(int idx)
 
 void MacroActionVariableEdit::StrValueChanged()
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_strValue = _strValue->toPlainText().toStdString();
 	adjustSize();
 	updateGeometry();
@@ -1023,21 +1156,13 @@ void MacroActionVariableEdit::StrValueChanged()
 void MacroActionVariableEdit::NumValueChanged(
 	const NumberVariable<double> &value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_numValue = value;
 }
 
 void MacroActionVariableEdit::SegmentIndexChanged(const IntVariable &val)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->SetSegmentIndexValue(val - 1);
 }
 
@@ -1054,10 +1179,10 @@ void MacroActionVariableEdit::SetSegmentValueError(const QString &text)
 void MacroActionVariableEdit::UpdateSegmentVariableValue()
 {
 	if (!_entryData ||
-	    !(_entryData->_type ==
-		      MacroActionVariable::Type::SET_CONDITION_VALUE ||
-	      _entryData->_type ==
-		      MacroActionVariable::Type::SET_ACTION_VALUE)) {
+	    !(_entryData->_action ==
+		      MacroActionVariable::Action::SET_CONDITION_VALUE ||
+	      _entryData->_action ==
+		      MacroActionVariable::Action::SET_ACTION_VALUE)) {
 		return;
 	}
 
@@ -1076,13 +1201,14 @@ void MacroActionVariableEdit::UpdateSegmentVariableValue()
 	}
 
 	std::shared_ptr<MacroSegment> segment;
-	if (_entryData->_type == MacroActionVariable::Type::SET_ACTION_VALUE) {
+	if (_entryData->_action ==
+	    MacroActionVariable::Action::SET_ACTION_VALUE) {
 		const auto &actions = m->Actions();
 		if (index < (int)actions.size()) {
 			segment = actions.at(index);
 		}
-	} else if (_entryData->_type ==
-		   MacroActionVariable::Type::SET_CONDITION_VALUE) {
+	} else if (_entryData->_action ==
+		   MacroActionVariable::Action::SET_CONDITION_VALUE) {
 		const auto &conditions = m->Conditions();
 		if (index < (int)conditions.size()) {
 			segment = conditions.at(index);
@@ -1099,14 +1225,14 @@ void MacroActionVariableEdit::UpdateSegmentVariableValue()
 		std::string type;
 		QString fmt;
 
-		if (_entryData->_type ==
-		    MacroActionVariable::Type::SET_ACTION_VALUE) {
+		if (_entryData->_action ==
+		    MacroActionVariable::Action::SET_ACTION_VALUE) {
 			type = MacroActionFactory::GetActionName(
 				segment->GetId());
 			fmt = QString(obs_module_text(
 				"AdvSceneSwitcher.action.variable.actionNoVariableSupport"));
-		} else if (_entryData->_type ==
-			   MacroActionVariable::Type::SET_CONDITION_VALUE) {
+		} else if (_entryData->_action ==
+			   MacroActionVariable::Action::SET_CONDITION_VALUE) {
 			type = MacroConditionFactory::GetConditionName(
 				segment->GetId());
 			fmt = QString(obs_module_text(
@@ -1142,32 +1268,20 @@ void MacroActionVariableEdit::MacroSegmentOrderChanged()
 void MacroActionVariableEdit::SubStringStartChanged(
 	const NumberVariable<int> &start)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_subStringStart = start;
 }
 
 void MacroActionVariableEdit::SubStringSizeChanged(
 	const NumberVariable<int> &size)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_subStringSize = size;
 }
 
 void MacroActionVariableEdit::SubStringRegexChanged(const RegexConfig &conf)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_subStringRegex = conf;
 
 	SetWidgetVisibility();
@@ -1175,11 +1289,7 @@ void MacroActionVariableEdit::SubStringRegexChanged(const RegexConfig &conf)
 
 void MacroActionVariableEdit::RegexPatternChanged()
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_regexPattern = _regexPattern->toPlainText().toStdString();
 	adjustSize();
 	updateGeometry();
@@ -1188,21 +1298,13 @@ void MacroActionVariableEdit::RegexPatternChanged()
 void MacroActionVariableEdit::RegexMatchIdxChanged(
 	const NumberVariable<int> &index)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_regexMatchIdx = index;
 }
 
 void MacroActionVariableEdit::FindStrValueChanged()
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_findStr = _findStr->toPlainText().toStdString();
 	adjustSize();
 	updateGeometry();
@@ -1210,11 +1312,7 @@ void MacroActionVariableEdit::FindStrValueChanged()
 
 void MacroActionVariableEdit::FindRegexChanged(const RegexConfig &conf)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_findRegex = conf;
 	adjustSize();
 	updateGeometry();
@@ -1222,11 +1320,7 @@ void MacroActionVariableEdit::FindRegexChanged(const RegexConfig &conf)
 
 void MacroActionVariableEdit::ReplaceStrValueChanged()
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_replaceStr = _replaceStr->toPlainText().toStdString();
 	adjustSize();
 	updateGeometry();
@@ -1234,11 +1328,7 @@ void MacroActionVariableEdit::ReplaceStrValueChanged()
 
 void MacroActionVariableEdit::MathExpressionChanged()
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_mathExpression = _mathExpression->text().toStdString();
 
 	// In case of invalid expression display an error
@@ -1256,73 +1346,45 @@ void MacroActionVariableEdit::MathExpressionChanged()
 
 void MacroActionVariableEdit::UseCustomPromptChanged(int value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_useCustomPrompt = value;
 	SetWidgetVisibility();
 }
 
 void MacroActionVariableEdit::InputPromptChanged()
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_inputPrompt = _inputPrompt->text().toStdString();
 }
 
 void MacroActionVariableEdit::UseInputPlaceholderChanged(int value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_useInputPlaceholder = value;
 	SetWidgetVisibility();
 }
 
 void MacroActionVariableEdit::InputPlaceholderChanged()
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_inputPlaceholder = _inputPlaceholder->text().toStdString();
 }
 
 void MacroActionVariableEdit::EnvVariableChanged()
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_envVariableName = _envVariable->text().toStdString();
 }
 
 void MacroActionVariableEdit::SceneChanged(const SceneSelection &scene)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_scene = scene;
 }
 
 void MacroActionVariableEdit::SelectionChanged(const TempVariableRef &var)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_tempVar = var;
 	SetWidgetVisibility();
 }
@@ -1330,21 +1392,13 @@ void MacroActionVariableEdit::SelectionChanged(const TempVariableRef &var)
 void MacroActionVariableEdit::SceneItemIndexChanged(
 	const NumberVariable<int> &value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_sceneItemIndex = value;
 }
 
 void MacroActionVariableEdit::DirectionChanged(int value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_direction =
 		static_cast<MacroActionVariable::Direction>(value);
 }
@@ -1352,21 +1406,13 @@ void MacroActionVariableEdit::DirectionChanged(int value)
 void MacroActionVariableEdit::StringLengthChanged(
 	const NumberVariable<int> &value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_stringLength = value;
 }
 
 void MacroActionVariableEdit::CharSelectionChanged(const QString &character)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	if (character.isEmpty()) {
 		_entryData->_paddingChar = ' ';
 	} else {
@@ -1376,13 +1422,41 @@ void MacroActionVariableEdit::CharSelectionChanged(const QString &character)
 
 void MacroActionVariableEdit::CaseTypeChanged(int index)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_caseType = static_cast<MacroActionVariable::CaseType>(
 		_caseType->itemData(index).toInt());
+}
+
+void MacroActionVariableEdit::RandomNumberStartChanged(
+	const NumberVariable<double> &value)
+{
+	GUARD_LOADING_AND_LOCK();
+	_entryData->_randomNumberStart = value;
+}
+
+void MacroActionVariableEdit::RandomNumberEndChanged(
+	const NumberVariable<double> &value)
+{
+	GUARD_LOADING_AND_LOCK();
+	_entryData->_randomNumberEnd = value;
+}
+
+void MacroActionVariableEdit::GenerateIntegerChanged(int value)
+{
+	GUARD_LOADING_AND_LOCK();
+	_entryData->_generateInteger = value;
+}
+
+void MacroActionVariableEdit::JsonQueryChanged()
+{
+	GUARD_LOADING_AND_LOCK();
+	_entryData->_jsonQuery = _jsonQuery->text().toStdString();
+}
+
+void MacroActionVariableEdit::JsonIndexChanged(const NumberVariable<int> &value)
+{
+	GUARD_LOADING_AND_LOCK();
+	_entryData->_jsonIndex = value;
 }
 
 void MacroActionVariableEdit::SetWidgetVisibility()
@@ -1408,18 +1482,22 @@ void MacroActionVariableEdit::SetWidgetVisibility()
 		{"{{stringLength}}", _stringLength},
 		{"{{paddingCharSelection}}", _paddingCharSelection},
 		{"{{caseType}}", _caseType},
+		{"{{jsonQuery}}", _jsonQuery},
+		{"{{jsonQueryHelp}}", _jsonQueryHelp},
+		{"{{jsonIndex}}", _jsonIndex},
 	};
 
 	const char *layoutString = "";
-	if (_entryData->_type == MacroActionVariable::Type::PAD) {
+	if (_entryData->_action == MacroActionVariable::Action::PAD) {
 		layoutString = obs_module_text(
-			"AdvSceneSwitcher.action.variable.entry.pad");
-	} else if (_entryData->_type == MacroActionVariable::Type::TRUNCATE) {
+			"AdvSceneSwitcher.action.variable.layout.pad");
+	} else if (_entryData->_action ==
+		   MacroActionVariable::Action::TRUNCATE) {
 		layoutString = obs_module_text(
-			"AdvSceneSwitcher.action.variable.entry.truncate");
+			"AdvSceneSwitcher.action.variable.layout.truncate");
 	} else {
 		layoutString = obs_module_text(
-			"AdvSceneSwitcher.action.variable.entry.other");
+			"AdvSceneSwitcher.action.variable.layout.other");
 	}
 
 	for (const auto &[_, widget] : widgetPlaceholders) {
@@ -1429,64 +1507,71 @@ void MacroActionVariableEdit::SetWidgetVisibility()
 	ClearLayout(_entryLayout);
 	PlaceWidgets(layoutString, _entryLayout, widgetPlaceholders);
 
-	if (_entryData->_type == MacroActionVariable::Type::SET_FIXED_VALUE ||
-	    _entryData->_type == MacroActionVariable::Type::APPEND ||
-	    _entryData->_type == MacroActionVariable::Type::MATH_EXPRESSION ||
-	    _entryData->_type == MacroActionVariable::Type::ENV_VARIABLE ||
-	    _entryData->_type == MacroActionVariable::Type::STRING_LENGTH ||
-	    _entryData->_type == MacroActionVariable::Type::EXTRACT_JSON) {
+	if (_entryData->_action == MacroActionVariable::Action::SET_VALUE ||
+	    _entryData->_action == MacroActionVariable::Action::APPEND ||
+	    _entryData->_action ==
+		    MacroActionVariable::Action::MATH_EXPRESSION ||
+	    _entryData->_action == MacroActionVariable::Action::ENV_VARIABLE ||
+	    _entryData->_action == MacroActionVariable::Action::STRING_LENGTH ||
+	    _entryData->_action == MacroActionVariable::Action::EXTRACT_JSON ||
+	    _entryData->_action == MacroActionVariable::Action::QUERY_JSON) {
 		RemoveStretchIfPresent(_entryLayout);
 	} else {
 		AddStretchIfNecessary(_entryLayout);
 	}
 
 	_variables2->setVisible(
-		_entryData->_type == MacroActionVariable::Type::APPEND_VAR ||
-		_entryData->_type == MacroActionVariable::Type::SWAP_VALUES);
+		_entryData->_action ==
+			MacroActionVariable::Action::APPEND_VAR ||
+		_entryData->_action ==
+			MacroActionVariable::Action::SWAP_VALUES);
 	_strValue->setVisible(
-		_entryData->_type ==
-			MacroActionVariable::Type::SET_FIXED_VALUE ||
-		_entryData->_type == MacroActionVariable::Type::APPEND ||
-		_entryData->_type == MacroActionVariable::Type::STRING_LENGTH ||
-		_entryData->_type == MacroActionVariable::Type::EXTRACT_JSON);
+		_entryData->_action == MacroActionVariable::Action::SET_VALUE ||
+		_entryData->_action == MacroActionVariable::Action::APPEND ||
+		_entryData->_action ==
+			MacroActionVariable::Action::STRING_LENGTH ||
+		_entryData->_action ==
+			MacroActionVariable::Action::EXTRACT_JSON);
 	_numValue->setVisible(
-		_entryData->_type == MacroActionVariable::Type::INCREMENT ||
-		_entryData->_type == MacroActionVariable::Type::DECREMENT);
+		_entryData->_action == MacroActionVariable::Action::INCREMENT ||
+		_entryData->_action == MacroActionVariable::Action::DECREMENT);
 	_segmentValueStatus->setVisible(
-		_entryData->_type ==
-			MacroActionVariable::Type::SET_ACTION_VALUE ||
-		_entryData->_type ==
-			MacroActionVariable::Type::SET_CONDITION_VALUE);
+		_entryData->_action ==
+			MacroActionVariable::Action::SET_ACTION_VALUE ||
+		_entryData->_action ==
+			MacroActionVariable::Action::SET_CONDITION_VALUE);
 	_segmentValue->setVisible(
-		_entryData->_type ==
-			MacroActionVariable::Type::SET_ACTION_VALUE ||
-		_entryData->_type ==
-			MacroActionVariable::Type::SET_CONDITION_VALUE);
+		_entryData->_action ==
+			MacroActionVariable::Action::SET_ACTION_VALUE ||
+		_entryData->_action ==
+			MacroActionVariable::Action::SET_CONDITION_VALUE);
 	_segmentIdx->setVisible(
-		_entryData->_type ==
-			MacroActionVariable::Type::SET_ACTION_VALUE ||
-		_entryData->_type ==
-			MacroActionVariable::Type::SET_CONDITION_VALUE);
+		_entryData->_action ==
+			MacroActionVariable::Action::SET_ACTION_VALUE ||
+		_entryData->_action ==
+			MacroActionVariable::Action::SET_CONDITION_VALUE);
 	SetLayoutVisible(_substringLayout,
-			 _entryData->_type ==
-				 MacroActionVariable::Type::SUBSTRING);
-	if (_entryData->_type == MacroActionVariable::Type::SUBSTRING) {
+			 _entryData->_action ==
+				 MacroActionVariable::Action::SUBSTRING);
+	if (_entryData->_action == MacroActionVariable::Action::SUBSTRING) {
 		bool showRegex = _entryData->_subStringRegex.Enabled();
 		SetLayoutVisible(_subStringIndexEntryLayout, !showRegex);
 		SetLayoutVisible(_subStringRegexEntryLayout, showRegex);
 		_regexPattern->setVisible(showRegex);
 	}
 	SetLayoutVisible(_findReplaceLayout,
-			 _entryData->_type ==
-				 MacroActionVariable::Type::FIND_AND_REPLACE);
-	_mathExpression->setVisible(_entryData->_type ==
-				    MacroActionVariable::Type::MATH_EXPRESSION);
+			 _entryData->_action ==
+				 MacroActionVariable::Action::FIND_AND_REPLACE);
+	_mathExpression->setVisible(
+		_entryData->_action ==
+		MacroActionVariable::Action::MATH_EXPRESSION);
 	_mathExpressionResult->hide();
 	SetLayoutVisible(_promptLayout,
-			 _entryData->_type ==
-				 MacroActionVariable::Type::USER_INPUT);
+			 _entryData->_action ==
+				 MacroActionVariable::Action::USER_INPUT);
 	_inputPrompt->setVisible(
-		_entryData->_type == MacroActionVariable::Type::USER_INPUT &&
+		_entryData->_action ==
+			MacroActionVariable::Action::USER_INPUT &&
 		_entryData->_useCustomPrompt);
 	if (_entryData->_useCustomPrompt) {
 		RemoveStretchIfPresent(_promptLayout);
@@ -1495,13 +1580,16 @@ void MacroActionVariableEdit::SetWidgetVisibility()
 	}
 	SetLayoutVisible(
 		_placeholderLayout,
-		_entryData->_type == MacroActionVariable::Type::USER_INPUT &&
+		_entryData->_action ==
+				MacroActionVariable::Action::USER_INPUT &&
 			_entryData->_useCustomPrompt);
 	_useInputPlaceholder->setVisible(
-		_entryData->_type == MacroActionVariable::Type::USER_INPUT &&
+		_entryData->_action ==
+			MacroActionVariable::Action::USER_INPUT &&
 		_entryData->_useCustomPrompt);
 	_inputPlaceholder->setVisible(
-		_entryData->_type == MacroActionVariable::Type::USER_INPUT &&
+		_entryData->_action ==
+			MacroActionVariable::Action::USER_INPUT &&
 		_entryData->_useCustomPrompt &&
 		_entryData->_useInputPlaceholder);
 	if (_entryData->_useInputPlaceholder) {
@@ -1509,31 +1597,41 @@ void MacroActionVariableEdit::SetWidgetVisibility()
 	} else {
 		AddStretchIfNecessary(_placeholderLayout);
 	}
-	_envVariable->setVisible(_entryData->_type ==
-				 MacroActionVariable::Type::ENV_VARIABLE);
+	_envVariable->setVisible(_entryData->_action ==
+				 MacroActionVariable::Action::ENV_VARIABLE);
 	_scenes->setVisible(
-		_entryData->_type ==
-			MacroActionVariable::Type::SCENE_ITEM_COUNT ||
-		_entryData->_type ==
-			MacroActionVariable::Type::SCENE_ITEM_NAME);
-	_tempVars->setVisible(_entryData->_type ==
-			      MacroActionVariable::Type::SET_TO_TEMPVAR);
+		_entryData->_action ==
+			MacroActionVariable::Action::SCENE_ITEM_COUNT ||
+		_entryData->_action ==
+			MacroActionVariable::Action::SCENE_ITEM_NAME);
+	_tempVars->setVisible(_entryData->_action ==
+			      MacroActionVariable::Action::SET_TO_TEMPVAR);
 	_tempVarsHelp->setVisible(
-		_entryData->_type ==
-			MacroActionVariable::Type::SET_TO_TEMPVAR &&
+		_entryData->_action ==
+			MacroActionVariable::Action::SET_TO_TEMPVAR &&
 		!_entryData->_tempVar.HasValidID());
-	_sceneItemIndex->setVisible(_entryData->_type ==
-				    MacroActionVariable::Type::SCENE_ITEM_NAME);
+	_sceneItemIndex->setVisible(
+		_entryData->_action ==
+		MacroActionVariable::Action::SCENE_ITEM_NAME);
 	_direction->setVisible(
-		_entryData->_type == MacroActionVariable::Type::PAD ||
-		_entryData->_type == MacroActionVariable::Type::TRUNCATE);
+		_entryData->_action == MacroActionVariable::Action::PAD ||
+		_entryData->_action == MacroActionVariable::Action::TRUNCATE);
 	_stringLength->setVisible(
-		_entryData->_type == MacroActionVariable::Type::PAD ||
-		_entryData->_type == MacroActionVariable::Type::TRUNCATE);
-	_paddingCharSelection->setVisible(_entryData->_type ==
-					  MacroActionVariable::Type::PAD);
-	_caseType->setVisible(_entryData->_type ==
-			      MacroActionVariable::Type::CHANGE_CASE);
+		_entryData->_action == MacroActionVariable::Action::PAD ||
+		_entryData->_action == MacroActionVariable::Action::TRUNCATE);
+	_paddingCharSelection->setVisible(_entryData->_action ==
+					  MacroActionVariable::Action::PAD);
+	_caseType->setVisible(_entryData->_action ==
+			      MacroActionVariable::Action::CHANGE_CASE);
+	SetLayoutVisible(_randomLayout,
+			 _entryData->_action ==
+				 MacroActionVariable::Action::RANDOM_NUMBER);
+	_jsonQuery->setVisible(_entryData->_action ==
+			       MacroActionVariable::Action::QUERY_JSON);
+	_jsonQueryHelp->setVisible(_entryData->_action ==
+				   MacroActionVariable::Action::QUERY_JSON);
+	_jsonIndex->setVisible(_entryData->_action ==
+			       MacroActionVariable::Action::ARRAY_JSON);
 
 	adjustSize();
 	updateGeometry();

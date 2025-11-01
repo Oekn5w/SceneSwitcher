@@ -3,6 +3,7 @@
 #include "filter-combo-box.hpp"
 #include "layout-helpers.hpp"
 #include "macro.hpp"
+#include "macro-settings.hpp"
 #include "path-helpers.hpp"
 #include "selection-helpers.hpp"
 #include "source-helpers.hpp"
@@ -23,15 +24,6 @@ namespace advss {
 void AdvSceneSwitcher::reject()
 {
 	close();
-}
-
-void AdvSceneSwitcher::UpdateNonMatchingScene(const QString &name)
-{
-	OBSSourceAutoRelease scene =
-		obs_get_source_by_name(name.toUtf8().constData());
-	OBSWeakSourceAutoRelease ws = obs_source_get_weak_source(scene);
-
-	switcher->nonMatchingScene = ws;
 }
 
 void AdvSceneSwitcher::on_noMatchDontSwitch_clicked()
@@ -55,7 +47,6 @@ void AdvSceneSwitcher::on_noMatchSwitch_clicked()
 	std::lock_guard<std::mutex> lock(switcher->m);
 	switcher->switchIfNotMatching = NoMatchBehavior::SWITCH;
 	ui->noMatchSwitchScene->setEnabled(true);
-	UpdateNonMatchingScene(ui->noMatchSwitchScene->currentText());
 	ui->randomDisabledWarning->setVisible(true);
 }
 
@@ -113,12 +104,12 @@ void AdvSceneSwitcher::on_startupBehavior_currentIndexChanged(int index)
 		static_cast<SwitcherData::StartupBehavior>(index);
 }
 
-void AdvSceneSwitcher::on_logLevel_currentIndexChanged(int value)
+void AdvSceneSwitcher::on_logLevel_currentIndexChanged(int idx)
 {
 	if (loading) {
 		return;
 	}
-	switcher->logLevel = static_cast<SwitcherData::LogLevel>(value);
+	SetLogLevel(static_cast<LogLevel>(ui->logLevel->itemData(idx).toInt()));
 }
 
 void AdvSceneSwitcher::on_autoStartEvent_currentIndexChanged(int index)
@@ -129,17 +120,6 @@ void AdvSceneSwitcher::on_autoStartEvent_currentIndexChanged(int index)
 
 	std::lock_guard<std::mutex> lock(switcher->m);
 	switcher->autoStartEvent = static_cast<SwitcherData::AutoStart>(index);
-}
-
-void AdvSceneSwitcher::on_noMatchSwitchScene_currentTextChanged(
-	const QString &text)
-{
-	if (loading) {
-		return;
-	}
-
-	std::lock_guard<std::mutex> lock(switcher->m);
-	UpdateNonMatchingScene(text);
 }
 
 void AdvSceneSwitcher::on_checkInterval_valueChanged(int value)
@@ -163,7 +143,7 @@ void AdvSceneSwitcher::closeEvent(QCloseEvent *)
 	switcher->windowSize = this->size();
 	switcher->macroListMacroEditSplitterPosition =
 		ui->macroListMacroEditSplitter->sizes();
-	MacroSelectionAboutToChange(); // Trigger saving of splitter states
+	ui->macroEdit->SetMacro(nullptr); // Trigger saving of splitter states
 
 	obs_frontend_save();
 }
@@ -203,6 +183,16 @@ void AdvSceneSwitcher::on_disableComboBoxFilter_stateChanged(int state)
 
 	switcher->disableFilterComboboxFilter = state;
 	FilterComboBox::SetFilterBehaviourEnabled(!state);
+}
+
+void AdvSceneSwitcher::on_disableMacroWidgetCache_stateChanged(int state)
+{
+	if (loading) {
+		return;
+	}
+
+	switcher->disableMacroWidgetCache = state;
+	MacroSegmentList::SetCachingEnabled(!state);
 }
 
 void AdvSceneSwitcher::on_warnPluginLoadFailure_stateChanged(int state)
@@ -275,12 +265,15 @@ static bool containsSensitiveData(obs_data_t *data)
 		obs_data_get_array(data, "twitchConnections");
 	OBSDataArrayAutoRelease websocketConnections =
 		obs_data_get_array(data, "websocketConnections");
+	OBSDataArrayAutoRelease mqttConnections =
+		obs_data_get_array(data, "mqttConnections");
 
 	auto isNotEmpty = [](obs_data_array *array) {
 		return obs_data_array_count(array) > 0;
 	};
 
-	return isNotEmpty(twitchTokens) || isNotEmpty(websocketConnections);
+	return isNotEmpty(twitchTokens) || isNotEmpty(websocketConnections) ||
+	       isNotEmpty(mqttConnections);
 }
 
 void AdvSceneSwitcher::on_exportSettings_clicked()
@@ -344,6 +337,10 @@ void AdvSceneSwitcher::on_importSettings_clicked()
 		return;
 	}
 
+	// We have to make sure to that no macro is currently being edited while
+	// the new settings are loaded
+	ui->macros->clearSelection();
+
 	std::lock_guard<std::mutex> lock(switcher->m);
 	switcher->LoadSettings(obj);
 	switcher->lastImportPath = path.toStdString();
@@ -379,6 +376,7 @@ void AdvSceneSwitcher::CheckFirstTimeSetup()
 		switcher->firstBoot = false;
 		DisplayMessage(
 			obs_module_text("AdvSceneSwitcher.firstBootMessage"));
+		switcher->Start();
 	}
 }
 
@@ -433,16 +431,14 @@ void SwitcherData::LoadSettings(obs_data_t *obj)
 	}
 
 	// New post load steps to be declared during load
-	postLoadSteps.clear();
+	ClearPostLoadSteps();
 
 	// Needs to be loaded before any entries which might rely on scene group
 	// selections to be available.
 	loadSceneGroups(obj);
 	LoadVariables(obj);
 
-	for (const auto &func : loadSteps) {
-		func(obj);
-	}
+	RunLoadSteps(obj);
 
 	LoadMacros(obj);
 	LoadGlobalMacroSettings(obj);
@@ -463,7 +459,7 @@ void SwitcherData::LoadSettings(obs_data_t *obj)
 	LoadHotkeys(obj);
 	LoadUISettings(obj);
 
-	RunPostLoadSteps();
+	RunAndClearPostLoadSteps();
 
 	// Reset on startup and scene collection change
 	ResetLastOpenedTab();
@@ -498,18 +494,16 @@ void SwitcherData::SaveSettings(obs_data_t *obj)
 	SaveUISettings(obj);
 	SaveVersion(obj, g_GIT_SHA1);
 
-	for (const auto &func : saveSteps) {
-		func(obj);
-	}
+	RunSaveSteps(obj);
 }
 
 void SwitcherData::SaveGeneralSettings(obs_data_t *obj)
 {
 	obs_data_set_int(obj, "interval", interval);
 
-	std::string nonMatchingSceneName = GetWeakSourceName(nonMatchingScene);
-	obs_data_set_string(obj, "non_matching_scene",
-			    nonMatchingSceneName.c_str());
+	OBSDataAutoRelease noMatchScene = obs_data_create();
+	nonMatchingScene.Save(noMatchScene);
+	obs_data_set_obj(obj, "noMatchScene", noMatchScene);
 	obs_data_set_int(obj, "switch_if_not_matching",
 			 static_cast<int>(switchIfNotMatching));
 	noMatchDelay.Save(obj, "noMatchDelay");
@@ -517,21 +511,28 @@ void SwitcherData::SaveGeneralSettings(obs_data_t *obj)
 	cooldown.Save(obj, "cooldown");
 	obs_data_set_bool(obj, "enableCooldown", enableCooldown);
 
-	obs_data_set_bool(obj, "active", sceneColletionStop ? true : !stop);
-	sceneColletionStop = false;
+	obs_data_set_bool(obj, "active", sceneCollectionStop ? true : !stop);
+	sceneCollectionStop = false;
 	obs_data_set_int(obj, "startup_behavior",
 			 static_cast<int>(startupBehavior));
 
-	obs_data_set_int(obj, "autoStartEvent",
-			 static_cast<int>(autoStartEvent));
+	OBSDataAutoRelease autoStart = obs_data_create();
+	obs_data_set_int(autoStart, "event", static_cast<int>(autoStartEvent));
+	obs_data_set_bool(autoStart, "useAutoStartScene", useAutoStartScene);
+	autoStartScene.Save(autoStart);
+	autoStartSceneName.Save(autoStart, "name");
+	autoStartSceneRegex.Save(autoStart);
+	obs_data_set_obj(obj, "autoStart", autoStart);
 
-	obs_data_set_int(obj, "logLevel", static_cast<int>(logLevel));
-	obs_data_set_int(obj, "logLevelVersion", 1);
+	SaveLogLevel(obj);
+
 	obs_data_set_bool(obj, "showSystemTrayNotifications",
 			  showSystemTrayNotifications);
 	obs_data_set_bool(obj, "disableHints", disableHints);
 	obs_data_set_bool(obj, "disableFilterComboboxFilter",
 			  disableFilterComboboxFilter);
+	obs_data_set_bool(obj, "disableMacroWidgetCache",
+			  disableMacroWidgetCache);
 	obs_data_set_bool(obj, "warnPluginLoadFailure", warnPluginLoadFailure);
 	obs_data_set_bool(obj, "hideLegacyTabs", hideLegacyTabs);
 
@@ -556,9 +557,14 @@ void SwitcherData::LoadGeneralSettings(obs_data_t *obj)
 				 static_cast<int>(NoMatchBehavior::NO_SWITCH));
 	switchIfNotMatching = static_cast<NoMatchBehavior>(
 		obs_data_get_int(obj, "switch_if_not_matching"));
-	std::string nonMatchingSceneName =
-		obs_data_get_string(obj, "non_matching_scene");
-	nonMatchingScene = GetWeakSourceByName(nonMatchingSceneName.c_str());
+
+	if (obs_data_has_user_value(obj, "noMatchScene")) {
+		OBSDataAutoRelease noMatchScene =
+			obs_data_get_obj(obj, "noMatchScene");
+		nonMatchingScene.Load(noMatchScene);
+	} else {
+		nonMatchingScene.Load(obj, "non_matching_scene");
+	}
 	noMatchDelay.Load(obj, "noMatchDelay");
 
 	cooldown.Load(obj, "cooldown");
@@ -579,34 +585,25 @@ void SwitcherData::LoadGeneralSettings(obs_data_t *obj)
 		stop = true;
 	}
 
-	autoStartEvent =
-		static_cast<AutoStart>(obs_data_get_int(obj, "autoStartEvent"));
+	OBSDataAutoRelease autoStart = obs_data_get_obj(obj, "autoStart");
+	autoStartEvent = static_cast<AutoStart>(
+		obs_data_has_user_value(obj, "autoStart")
+			? obs_data_get_int(autoStart, "event")
+			: obs_data_get_int(obj, "autoStartEvent"));
+	useAutoStartScene = obs_data_get_bool(autoStart, "useAutoStartScene");
+	autoStartScene.Load(autoStart);
+	autoStartSceneName.Load(autoStart, "name");
+	autoStartSceneRegex.Load(autoStart);
 
-	logLevel = static_cast<LogLevel>(obs_data_get_int(obj, "logLevel"));
-	if (obs_data_get_int(obj, "logLevelVersion") < 1) {
-		enum OldLogLevel { DEFAULT, LOG_ACTION, VERBOSE };
-		OldLogLevel oldLogLevel = static_cast<OldLogLevel>(
-			obs_data_get_int(obj, "logLevel"));
-		switch (oldLogLevel) {
-		case DEFAULT:
-			logLevel = LogLevel::DEFAULT;
-			break;
-		case LOG_ACTION:
-			logLevel = LogLevel::LOG_ACTION;
-			break;
-		case VERBOSE:
-			logLevel = LogLevel::VERBOSE;
-			break;
-		default:
-			break;
-		}
-	}
+	LoadLogLevel(obj);
 
 	showSystemTrayNotifications =
 		obs_data_get_bool(obj, "showSystemTrayNotifications");
 	disableHints = obs_data_get_bool(obj, "disableHints");
 	disableFilterComboboxFilter =
 		obs_data_get_bool(obj, "disableFilterComboboxFilter");
+	disableMacroWidgetCache =
+		obs_data_get_bool(obj, "disableMacroWidgetCache");
 	obs_data_set_default_bool(obj, "warnPluginLoadFailure", true);
 	warnPluginLoadFailure = obs_data_get_bool(obj, "warnPluginLoadFailure");
 	obs_data_set_default_bool(obj, "hideLegacyTabs", true);
@@ -676,14 +673,35 @@ void SwitcherData::CheckNoMatchSwitch(bool &match, OBSWeakSource &scene,
 		return;
 	}
 
-	if (switchIfNotMatching == NoMatchBehavior::SWITCH &&
-	    nonMatchingScene) {
+	auto noMatchScene = nonMatchingScene.GetScene(false);
+	if (switchIfNotMatching == NoMatchBehavior::SWITCH && noMatchScene) {
 		match = true;
-		scene = nonMatchingScene;
+		scene = noMatchScene;
 		transition = nullptr;
 	}
 	if (switchIfNotMatching == NoMatchBehavior::RANDOM_SWITCH) {
 		match = checkRandom(scene, transition, sleep);
+	}
+}
+
+void SwitcherData::CheckAutoStart()
+{
+	if (!useAutoStartScene) {
+		return;
+	}
+
+	bool shouldStartPlugin = false;
+	if (autoStartSceneRegex.Enabled()) {
+		const auto currentSceneName = GetWeakSourceName(currentScene);
+		shouldStartPlugin = autoStartSceneRegex.Matches(
+			currentSceneName, autoStartSceneName);
+	} else {
+		shouldStartPlugin = autoStartScene.GetScene(false) ==
+				    currentScene;
+	}
+
+	if (shouldStartPlugin) {
+		Start();
 	}
 }
 
@@ -829,7 +847,7 @@ static void setupGeneralTabInactiveWarning(QTabWidget *tabs)
 	inactiveTimer->start();
 }
 
-void advss::AdvSceneSwitcher::SetCheckIntervalTooLowVisibility() const
+void AdvSceneSwitcher::SetCheckIntervalTooLowVisibility() const
 {
 	auto macro = GetMacroWithInvalidConditionInterval();
 	if (!macro) {
@@ -853,8 +871,6 @@ void advss::AdvSceneSwitcher::SetCheckIntervalTooLowVisibility() const
 
 void AdvSceneSwitcher::SetupGeneralTab()
 {
-	PopulateSceneSelection(ui->noMatchSwitchScene, false);
-
 	if (switcher->switchIfNotMatching == NoMatchBehavior::SWITCH) {
 		ui->noMatchSwitch->setChecked(true);
 		ui->noMatchSwitchScene->setEnabled(true);
@@ -866,8 +882,17 @@ void AdvSceneSwitcher::SetupGeneralTab()
 		ui->noMatchRandomSwitch->setChecked(true);
 		ui->noMatchSwitchScene->setEnabled(false);
 	}
-	ui->noMatchSwitchScene->setCurrentText(
-		GetWeakSourceName(switcher->nonMatchingScene).c_str());
+	ui->noMatchSwitchScene->SetScene(switcher->nonMatchingScene);
+	ui->noMatchSwitchScene->LockToMainCanvas();
+
+	connect(ui->noMatchSwitchScene, &SceneSelectionWidget::SceneChanged,
+		this, [this](const SceneSelection &scene) {
+			if (loading) {
+				return;
+			}
+			std::lock_guard<std::mutex> lock(switcher->m);
+			switcher->nonMatchingScene = scene;
+		});
 
 	DurationSelection *noMatchDelay = new DurationSelection();
 	noMatchDelay->SetDuration(switcher->noMatchDelay);
@@ -890,7 +915,9 @@ void AdvSceneSwitcher::SetupGeneralTab()
 			 SIGNAL(DurationChanged(const Duration &)), this,
 			 SLOT(CooldownDurationChanged(const Duration &)));
 
-	ui->logLevel->setCurrentIndex(static_cast<int>(switcher->logLevel));
+	PopulateLogLevelSelection(ui->logLevel);
+	ui->logLevel->setCurrentIndex(
+		ui->logLevel->findData(static_cast<int>(GetLogLevel())));
 
 	ui->saveWindowGeo->setChecked(switcher->saveWindowGeo);
 	ui->showTrayNotifications->setChecked(
@@ -900,6 +927,9 @@ void AdvSceneSwitcher::SetupGeneralTab()
 		switcher->disableFilterComboboxFilter);
 	FilterComboBox::SetFilterBehaviourEnabled(
 		!switcher->disableFilterComboboxFilter);
+	ui->disableMacroWidgetCache->setChecked(
+		switcher->disableMacroWidgetCache);
+	MacroSegmentList::SetCachingEnabled(!switcher->disableMacroWidgetCache);
 	ui->warnPluginLoadFailure->setChecked(switcher->warnPluginLoadFailure);
 	ui->hideLegacyTabs->setChecked(switcher->hideLegacyTabs);
 
@@ -913,6 +943,75 @@ void AdvSceneSwitcher::SetupGeneralTab()
 	populateAutoStartEventSelection(ui->autoStartEvent);
 	ui->autoStartEvent->setCurrentIndex(
 		static_cast<int>(switcher->autoStartEvent));
+	ui->autoStartSceneEnable->setChecked(switcher->useAutoStartScene);
+	ui->autoStartScene->SetScene(switcher->autoStartScene);
+	ui->autoStartScene->LockToMainCanvas();
+	ui->autoStartSceneName->setText(switcher->autoStartSceneName);
+	ui->autoStartSceneNameRegex->SetRegexConfig(
+		switcher->autoStartSceneRegex);
+
+	const auto setupAutoStartSceneLayoutVisibility = [this](bool useRegex) {
+		ui->autoStartSceneName->setVisible(useRegex);
+		ui->autoStartScene->setVisible(!useRegex);
+		if (useRegex) {
+			RemoveStretchIfPresent(ui->autoStartSceneLayout);
+		} else {
+			AddStretchIfNecessary(ui->autoStartSceneLayout);
+		}
+	};
+	setupAutoStartSceneLayoutVisibility(
+		switcher->autoStartSceneRegex.Enabled());
+
+	const auto setupAutoStartSceneWidgetState =
+		[this](bool useAutoStartScene) {
+			ui->autoStartScene->setEnabled(useAutoStartScene);
+			ui->autoStartSceneName->setEnabled(useAutoStartScene);
+			ui->autoStartSceneNameRegex->setEnabled(
+				useAutoStartScene);
+		};
+	setupAutoStartSceneWidgetState(switcher->useAutoStartScene);
+
+	connect(ui->autoStartSceneEnable, &QCheckBox::stateChanged, this,
+		[this, setupAutoStartSceneWidgetState](int enabled) {
+			if (loading) {
+				return;
+			}
+			std::lock_guard<std::mutex> lock(switcher->m);
+			switcher->useAutoStartScene = enabled;
+			setupAutoStartSceneWidgetState(enabled);
+		});
+
+	connect(ui->autoStartScene, &SceneSelectionWidget::SceneChanged, this,
+		[this](const SceneSelection &scene) {
+			if (loading) {
+				return;
+			}
+			std::lock_guard<std::mutex> lock(switcher->m);
+			switcher->autoStartScene = scene;
+			switcher->CheckAutoStart();
+		});
+	connect(ui->autoStartSceneName, &VariableLineEdit::editingFinished,
+		this, [this]() {
+			if (loading) {
+				return;
+			}
+			std::lock_guard<std::mutex> lock(switcher->m);
+			switcher->autoStartSceneName =
+				ui->autoStartSceneName->text().toStdString();
+			switcher->CheckAutoStart();
+		});
+	connect(ui->autoStartSceneNameRegex,
+		&RegexConfigWidget::RegexConfigChanged, this,
+		[this, setupAutoStartSceneLayoutVisibility](
+			const RegexConfig &regex) {
+			if (loading) {
+				return;
+			}
+			std::lock_guard<std::mutex> lock(switcher->m);
+			switcher->autoStartSceneRegex = regex;
+			setupAutoStartSceneLayoutVisibility(regex.Enabled());
+			switcher->CheckAutoStart();
+		});
 
 	// Set up status control
 	auto statusControl = new StatusControl(this, true);

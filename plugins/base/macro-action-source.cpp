@@ -3,6 +3,7 @@
 #include "json-helpers.hpp"
 #include "selection-helpers.hpp"
 #include "source-settings-helpers.hpp"
+#include "ui-helpers.hpp"
 
 #include <obs-frontend-api.h>
 
@@ -42,7 +43,7 @@ const static std::map<obs_deinterlace_mode, std::string> deinterlaceModes = {
 	{OBS_DEINTERLACE_MODE_DISABLE,
 	 "AdvSceneSwitcher.action.source.deinterlaceMode.disable"},
 	{OBS_DEINTERLACE_MODE_DISCARD,
-	 "AdvSceneSwitcher.action.source.deinterlaceMode.disable"},
+	 "AdvSceneSwitcher.action.source.deinterlaceMode.discard"},
 	{OBS_DEINTERLACE_MODE_RETRO,
 	 "AdvSceneSwitcher.action.source.deinterlaceMode.retro"},
 	{OBS_DEINTERLACE_MODE_BLEND,
@@ -67,10 +68,13 @@ const static std::map<obs_deinterlace_field_order, std::string>
 		 "AdvSceneSwitcher.action.source.deinterlaceOrder.bottomFieldFirst"},
 };
 
-const static std::map<MacroActionSource::SettingsInputMethod, std::string>
+static const std::vector<
+	std::pair<MacroActionSource::SettingsInputMethod, std::string>>
 	inputMethods = {
 		{MacroActionSource::SettingsInputMethod::INDIVIDUAL_MANUAL,
 		 "AdvSceneSwitcher.action.source.inputMethod.individualManual"},
+		{MacroActionSource::SettingsInputMethod::INDIVIDUAL_LIST_ENTRY,
+		 "AdvSceneSwitcher.action.source.inputMethod.individualListEntryManual"},
 		{MacroActionSource::SettingsInputMethod::INDIVIDUAL_TEMPVAR,
 		 "AdvSceneSwitcher.action.source.inputMethod.individualTempvar"},
 		{MacroActionSource::SettingsInputMethod::JSON_STRING,
@@ -118,6 +122,10 @@ bool MacroActionSource::PerformAction()
 		switch (_settingsInputMethod) {
 		case SettingsInputMethod::INDIVIDUAL_MANUAL:
 			SetSourceSetting(s, _setting, _manualSettingValue);
+			break;
+		case SettingsInputMethod::INDIVIDUAL_LIST_ENTRY:
+			SetSourceSettingListEntryValueByName(
+				s, _setting, _manualSettingValue);
 			break;
 		case SettingsInputMethod::INDIVIDUAL_TEMPVAR: {
 			auto var = _tempVar.GetTempVariable(GetMacro());
@@ -193,7 +201,7 @@ bool MacroActionSource::Save(obs_data_t *obj) const
 			 static_cast<int>(_settingsInputMethod));
 	_setting.Save(obj);
 	_manualSettingValue.Save(obj, "manualSettingValue");
-	_tempVar.Save(obj);
+	_tempVar.Save(obj, GetMacro());
 	_settingsString.Save(obj, "settings");
 	obs_data_set_int(obj, "deinterlaceMode",
 			 static_cast<int>(_deinterlaceMode));
@@ -263,39 +271,29 @@ static inline void populateActionSelection(QComboBox *list)
 	}
 }
 
-static inline void populateDeinterlaceModeSelection(QComboBox *list)
+template<typename T>
+static inline void populateModeSelection(QComboBox *list, const T &modes)
 {
 	list->clear();
-	for (const auto &[value, name] : deinterlaceModes) {
+	for (const auto &[value, name] : modes) {
 		list->addItem(obs_module_text(name.c_str()),
 			      static_cast<int>(value));
 	}
 }
 
-static inline void populateDeinterlaceFieldOrderSelection(QComboBox *list)
+static QStringList getSourcesList()
 {
-	list->clear();
-	for (const auto &[value, name] : deinterlaceFieldOrders) {
-		list->addItem(obs_module_text(name.c_str()),
-			      static_cast<int>(value));
-	}
-}
-
-static inline void populateSettingsInputMethods(QComboBox *list)
-{
-	list->clear();
-	for (const auto &[value, name] : inputMethods) {
-		list->addItem(obs_module_text(name.c_str()),
-			      static_cast<int>(value));
-	}
+	auto sources = GetSourceNames();
+	sources.sort();
+	return sources;
 }
 
 MacroActionSourceEdit::MacroActionSourceEdit(
 	QWidget *parent, std::shared_ptr<MacroActionSource> entryData)
 	: QWidget(parent),
-	  _sources(new SourceSelectionWidget(this, QStringList(), true)),
+	  _sources(new SourceSelectionWidget(this, getSourcesList, true)),
 	  _actions(new QComboBox()),
-	  _settingsButtons(new QComboBox()),
+	  _settingsButtons(new SourceSettingsButtonSelection(this)),
 	  _settingsLayout(new QHBoxLayout()),
 	  _settingsInputMethods(new QComboBox(this)),
 	  _manualSettingValue(new VariableTextEdit(this, 5, 1, 1)),
@@ -312,19 +310,19 @@ MacroActionSourceEdit::MacroActionSourceEdit(
 		  obs_module_text("AdvSceneSwitcher.action.source.refresh")))
 {
 	populateActionSelection(_actions);
-	auto sources = GetSourceNames();
-	sources.sort();
-	_sources->SetSourceNameList(sources);
-	populateDeinterlaceModeSelection(_deinterlaceMode);
-	populateDeinterlaceFieldOrderSelection(_deinterlaceOrder);
-	populateSettingsInputMethods(_settingsInputMethods);
+
+	populateModeSelection(_deinterlaceMode, deinterlaceModes);
+	populateModeSelection(_deinterlaceOrder, deinterlaceFieldOrders);
+	populateModeSelection(_settingsInputMethods, inputMethods);
 	_refreshSettingSelection->setToolTip(obs_module_text(
 		"AdvSceneSwitcher.action.source.refresh.tooltip"));
 
 	QWidget::connect(_actions, SIGNAL(currentIndexChanged(int)), this,
 			 SLOT(ActionChanged(int)));
-	QWidget::connect(_settingsButtons, SIGNAL(currentIndexChanged(int)),
-			 this, SLOT(ButtonChanged(int)));
+	QWidget::connect(_settingsButtons,
+			 SIGNAL(SelectionChanged(const SourceSettingButton &)),
+			 this,
+			 SLOT(ButtonChanged(const SourceSettingButton &)));
 	QWidget::connect(_sources,
 			 SIGNAL(SourceChanged(const SourceSelection &)), this,
 			 SLOT(SourceChanged(const SourceSelection &)));
@@ -352,7 +350,7 @@ MacroActionSourceEdit::MacroActionSourceEdit(
 
 	auto entryLayout = new QHBoxLayout;
 	entryLayout->setContentsMargins(0, 0, 0, 0);
-	std::unordered_map<std::string, QWidget *> widgetPlaceholders = {
+	const std::unordered_map<std::string, QWidget *> widgetPlaceholders = {
 		{"{{sources}}", _sources},
 		{"{{actions}}", _actions},
 		{"{{settings}}", _sourceSettings},
@@ -394,14 +392,11 @@ void MacroActionSourceEdit::UpdateEntryData()
 		return;
 	}
 
-	PopulateSourceButtonSelection(_settingsButtons,
-				      _entryData->_source.GetSource());
+	const auto weakSource = _entryData->_source.GetSource();
+	_settingsButtons->SetSelection(weakSource, _entryData->_button);
 	_actions->setCurrentIndex(static_cast<int>(_entryData->_action));
 	_sources->SetSource(_entryData->_source);
-	_sourceSettings->SetSource(_entryData->_source.GetSource());
-	_sourceSettings->SetSetting(_entryData->_setting);
-	_settingsButtons->setCurrentText(
-		QString::fromStdString(_entryData->_button.ToString()));
+	_sourceSettings->SetSelection(weakSource, _entryData->_setting);
 	_settingsString->setPlainText(_entryData->_settingsString);
 	_deinterlaceMode->setCurrentIndex(_deinterlaceMode->findData(
 		static_cast<int>(_entryData->_deinterlaceMode)));
@@ -417,17 +412,14 @@ void MacroActionSourceEdit::UpdateEntryData()
 
 void MacroActionSourceEdit::SourceChanged(const SourceSelection &source)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
 	{
-		auto lock = LockContext();
+		GUARD_LOADING_AND_LOCK();
 		_entryData->_source = source;
 	}
-	PopulateSourceButtonSelection(_settingsButtons,
-				      _entryData->_source.GetSource());
-	_sourceSettings->SetSource(_entryData->_source.GetSource());
+
+	const auto weakSource = _entryData->_source.GetSource();
+	_sourceSettings->SetSource(weakSource);
+	_settingsButtons->SetSource(weakSource);
 	SetWidgetVisibility();
 	emit HeaderInfoChanged(
 		QString::fromStdString(_entryData->GetShortDesc()));
@@ -435,24 +427,15 @@ void MacroActionSourceEdit::SourceChanged(const SourceSelection &source)
 
 void MacroActionSourceEdit::ActionChanged(int value)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_action = static_cast<MacroActionSource::Action>(value);
 	SetWidgetVisibility();
 }
 
-void MacroActionSourceEdit::ButtonChanged(int idx)
+void MacroActionSourceEdit::ButtonChanged(const SourceSettingButton &button)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
-	_entryData->_button = qvariant_cast<SourceSettingButton>(
-		_settingsButtons->itemData(idx));
+	GUARD_LOADING_AND_LOCK();
+	_entryData->_button = button;
 }
 
 void MacroActionSourceEdit::GetSettingsClicked()
@@ -468,22 +451,27 @@ void MacroActionSourceEdit::GetSettingsClicked()
 					      _entryData->_setting)
 				.value_or(""));
 		break;
+	case MacroActionSource::SettingsInputMethod::INDIVIDUAL_LIST_ENTRY:
+		_manualSettingValue->setPlainText(
+			GetSourceSettingListEntryName(
+				_entryData->_source.GetSource(),
+				_entryData->_setting)
+				.value_or(""));
+		break;
 	case MacroActionSource::SettingsInputMethod::INDIVIDUAL_TEMPVAR:
 		break;
 	case MacroActionSource::SettingsInputMethod::JSON_STRING:
-		_settingsString->setPlainText(FormatJsonString(
-			GetSourceSettings(_entryData->_source.GetSource())));
+		const auto settings = GetSourceSettings(
+			_entryData->_source.GetSource(), true);
+		_settingsString->setPlainText(
+			FormatJsonString(settings ? *settings : ""));
 		break;
 	}
 }
 
 void MacroActionSourceEdit::SettingsStringChanged()
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_settingsString =
 		_settingsString->toPlainText().toStdString();
 
@@ -493,22 +481,14 @@ void MacroActionSourceEdit::SettingsStringChanged()
 
 void MacroActionSourceEdit::DeinterlaceModeChanged(int idx)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_deinterlaceMode = static_cast<obs_deinterlace_mode>(
 		_deinterlaceMode->itemData(idx).toInt());
 }
 
 void MacroActionSourceEdit::DeinterlaceOrderChanged(int idx)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_deinterlaceOrder =
 		static_cast<obs_deinterlace_field_order>(
 			_deinterlaceOrder->itemData(idx).toInt());
@@ -516,21 +496,13 @@ void MacroActionSourceEdit::DeinterlaceOrderChanged(int idx)
 
 void MacroActionSourceEdit::SelectionChanged(const TempVariableRef &var)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_tempVar = var;
 }
 
 void MacroActionSourceEdit::SettingsInputMethodChanged(int idx)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_settingsInputMethod =
 		static_cast<MacroActionSource::SettingsInputMethod>(
 			_settingsInputMethods->itemData(idx).toInt());
@@ -539,21 +511,14 @@ void MacroActionSourceEdit::SettingsInputMethodChanged(int idx)
 
 void MacroActionSourceEdit::SelectionChanged(const SourceSetting &setting)
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_setting = setting;
+	SetWidgetVisibility();
 }
 
 void MacroActionSourceEdit::ManualSettingsValueChanged()
 {
-	if (_loading || !_entryData) {
-		return;
-	}
-
-	auto lock = LockContext();
+	GUARD_LOADING_AND_LOCK();
 	_entryData->_manualSettingValue =
 		_manualSettingValue->toPlainText().toStdString();
 
@@ -564,6 +529,22 @@ void MacroActionSourceEdit::ManualSettingsValueChanged()
 void MacroActionSourceEdit::RefreshVariableSourceSelectionValue()
 {
 	_sourceSettings->SetSource(_entryData->_source.GetSource());
+}
+
+static QString GetIndividualListEntryName()
+{
+	static const auto matchesInput =
+		[](const std::pair<MacroActionSource::SettingsInputMethod,
+				   std::string> &p) {
+			return p.first ==
+			       MacroActionSource::SettingsInputMethod::
+				       INDIVIDUAL_LIST_ENTRY;
+		};
+	static const QString listValueText(
+		obs_module_text(std::find_if(inputMethods.begin(),
+					     inputMethods.end(), matchesInput)
+					->second.c_str()));
+	return listValueText;
 }
 
 void MacroActionSourceEdit::SetWidgetVisibility()
@@ -579,8 +560,16 @@ void MacroActionSourceEdit::SetWidgetVisibility()
 		_entryData->_action == MacroActionSource::Action::SETTINGS &&
 		_entryData->_settingsInputMethod ==
 			MacroActionSource::SettingsInputMethod::JSON_STRING);
-	_getSettings->setVisible(_entryData->_action ==
-				 MacroActionSource::Action::SETTINGS);
+	_getSettings->setVisible(
+		_entryData->_action == MacroActionSource::Action::SETTINGS &&
+		_entryData->_settingsInputMethod !=
+			MacroActionSource::SettingsInputMethod::
+				INDIVIDUAL_TEMPVAR);
+
+	SetRowVisibleByValue(_settingsInputMethods,
+			     GetIndividualListEntryName(),
+			     _entryData->_setting.IsList());
+
 	_tempVars->setVisible(_entryData->_action ==
 				      MacroActionSource::Action::SETTINGS &&
 			      _entryData->_settingsInputMethod ==
@@ -588,8 +577,11 @@ void MacroActionSourceEdit::SetWidgetVisibility()
 					      INDIVIDUAL_TEMPVAR);
 
 	if (_entryData->_action == MacroActionSource::Action::SETTINGS &&
-	    _entryData->_settingsInputMethod ==
-		    MacroActionSource::SettingsInputMethod::INDIVIDUAL_MANUAL) {
+	    (_entryData->_settingsInputMethod ==
+		     MacroActionSource::SettingsInputMethod::INDIVIDUAL_MANUAL ||
+	     _entryData->_settingsInputMethod ==
+		     MacroActionSource::SettingsInputMethod::
+			     INDIVIDUAL_LIST_ENTRY)) {
 		RemoveStretchIfPresent(_settingsLayout);
 		_manualSettingValue->show();
 	} else {
@@ -612,8 +604,12 @@ void MacroActionSourceEdit::SetWidgetVisibility()
 		MacroActionSource::Action::DEINTERLACE_FIELD_ORDER);
 
 	_refreshSettingSelection->setVisible(
-		_entryData->_settingsInputMethod ==
-			MacroActionSource::SettingsInputMethod::INDIVIDUAL_MANUAL &&
+		(_entryData->_settingsInputMethod ==
+			 MacroActionSource::SettingsInputMethod::
+				 INDIVIDUAL_MANUAL ||
+		 _entryData->_settingsInputMethod ==
+			 MacroActionSource::SettingsInputMethod::
+				 INDIVIDUAL_LIST_ENTRY) &&
 		_entryData->_source.GetType() ==
 			SourceSelection::Type::VARIABLE);
 
