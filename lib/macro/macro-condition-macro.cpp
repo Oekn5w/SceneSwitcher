@@ -102,7 +102,7 @@ bool MacroConditionMacro::CheckActionStateCondition()
 	if (!macro) {
 		return false;
 	}
-	if (!IsValidMacroSegmentIndex(macro.get(), _actionIndex - 1, false)) {
+	if (!IsValidActionIndex(macro.get(), _actionIndex - 1)) {
 		return false;
 	}
 	if (_type == Type::ACTION_DISABLED) {
@@ -315,6 +315,7 @@ MacroConditionMacroEdit::MacroConditionMacroEdit(
 	  _actionIndex(new MacroSegmentSelection(
 		  this, MacroSegmentSelection::Type::ACTION))
 {
+	_macros->HideGroups();
 	_count->setMaximum(10000000);
 	populateTypeSelection(_types);
 	populateCounterConditionSelection(_counterConditions);

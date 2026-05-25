@@ -210,7 +210,7 @@ findListPropertyById(const obs_source_t *source, const std::string &id)
 	}
 	auto property = obs_properties_first(properties);
 	return {findListPropertyByIdHelper(property, id),
-		properties_t(nullptr, obs_properties_destroy)};
+		properties_t(properties, obs_properties_destroy)};
 }
 
 static std::pair<obs_property_t *, properties_t>
@@ -335,6 +335,12 @@ void SetSourceSetting(obs_source_t *source, const SourceSetting &setting,
 	case OBS_DATA_OBJECT: {
 		OBSDataAutoRelease json =
 			obs_data_create_from_json(value.c_str());
+		if (!json) {
+			blog(LOG_WARNING,
+			     "not setting invalid data object settings value! (%s)",
+			     value.c_str());
+			break;
+		}
 		obs_data_set_obj(data, id.c_str(), json);
 		break;
 	}

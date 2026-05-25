@@ -1,12 +1,13 @@
 #pragma once
 #include "export-symbol-helper.hpp"
 
+#include <QString>
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <optional>
-#include <string_view>
 #include <thread>
 
 struct obs_data;
@@ -18,16 +19,25 @@ class Macro;
 class MacroAction;
 class MacroCondition;
 
-EXPORT std::deque<std::shared_ptr<Macro>> &GetMacros();
+static const int macro_func = 10;
+
+EXPORT std::deque<std::shared_ptr<Macro>> &GetTopLevelMacros();
+std::deque<std::shared_ptr<Macro>> &GetTemporaryMacros();
+EXPORT std::deque<std::shared_ptr<Macro>> GetAllMacros();
+
+Macro *GetMacroByName(const char *name);
+Macro *GetMacroByQString(const QString &name);
+std::weak_ptr<Macro> GetWeakMacroByName(const char *name);
 
 EXPORT std::optional<std::deque<std::shared_ptr<MacroAction>>>
 GetMacroActions(Macro *);
+EXPORT std::optional<std::deque<std::shared_ptr<MacroAction>>>
+GetMacroElseActions(Macro *);
 EXPORT std::optional<std::deque<std::shared_ptr<MacroCondition>>>
 GetMacroConditions(Macro *);
 
-std::string_view GetSceneSwitchActionId();
-
-constexpr auto macro_func = 10;
+EXPORT bool IsGroupMacro(Macro *);
+EXPORT std::vector<std::shared_ptr<Macro>> GetGroupMacroEntries(Macro *);
 
 EXPORT std::condition_variable &GetMacroWaitCV();
 EXPORT std::condition_variable &GetMacroTransitionCV();
@@ -48,6 +58,8 @@ LastMacroConditionCheckTime(const Macro *);
 
 EXPORT bool MacroIsStopped(const Macro *);
 EXPORT bool MacroIsPaused(const Macro *);
+EXPORT void SetMacroPaused(Macro *, bool paused);
+EXPORT void StopMacro(Macro *);
 EXPORT bool
 MacroWasPausedSince(const Macro *,
 		    const std::chrono::high_resolution_clock::time_point &);
@@ -56,9 +68,14 @@ EXPORT bool MacroWasCheckedSinceLastStart(const Macro *);
 EXPORT void AddMacroHelperThread(Macro *, std::thread &&);
 
 EXPORT bool CheckMacros();
+EXPORT bool CheckMacroConditions(Macro *, bool ignorePause = false);
 
-EXPORT bool RunMacroActions(Macro *);
+EXPORT bool RunMacroActions(Macro *, bool forceParallel = false,
+			    bool ignorePause = false);
+EXPORT bool RunMacroElseActions(Macro *, bool forceParallel = false,
+				bool ignorePause = false);
 EXPORT bool RunMacros();
+
 void StopAllMacros();
 
 EXPORT void LoadMacros(obs_data_t *obj);
@@ -68,6 +85,8 @@ EXPORT void InvalidateMacroTempVarValues();
 EXPORT void ResetMacroConditionTimers(Macro *);
 EXPORT void ResetMacroRunCount(Macro *);
 
-bool IsValidMacroSegmentIndex(const Macro *m, const int idx, bool isCondition);
+bool IsValidActionIndex(const Macro *m, const int idx);
+bool IsValidElseActionIndex(const Macro *m, const int idx);
+bool IsValidConditionIndex(const Macro *m, const int idx);
 
 } // namespace advss

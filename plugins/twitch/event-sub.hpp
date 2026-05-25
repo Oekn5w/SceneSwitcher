@@ -81,6 +81,8 @@ private:
 	void HandleServerMigration(obs_data_t *);
 	void HandleRevocation(obs_data_t *);
 
+	void LogActiveSubscriptions() const;
+
 	void RegisterInstance();
 	void UnregisterInstance();
 
@@ -110,6 +112,7 @@ private:
 	std::condition_variable _cv;
 	std::atomic_bool _connected{false};
 	std::atomic_bool _disconnect{false};
+	std::atomic_bool _reconnecting{false};
 
 	std::string _url;
 	std::string _sessionID;

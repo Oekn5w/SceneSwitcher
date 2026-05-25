@@ -8,6 +8,8 @@
 
 namespace advss {
 
+class SwitchButton;
+
 class DurationModifierEdit : public QWidget {
 	Q_OBJECT
 public:
@@ -34,11 +36,9 @@ class MacroConditionEdit : public MacroSegmentEdit {
 	Q_OBJECT
 
 public:
-	MacroConditionEdit(
-		QWidget *parent = nullptr,
-		std::shared_ptr<MacroCondition> * = nullptr,
-		const std::string &id = MacroCondition::GetDefaultID().data(),
-		bool root = true);
+	MacroConditionEdit(QWidget *parent = nullptr,
+			   std::shared_ptr<MacroCondition> * = nullptr,
+			   bool root = true);
 	bool IsRootNode() const;
 	void SetRootNode(bool);
 	void SetupWidgets(bool basicSetup = false);
@@ -49,11 +49,13 @@ private slots:
 	void ConditionSelectionChanged(const QString &text);
 	void DurationChanged(const Duration &value);
 	void DurationModifierChanged(DurationModifier::Type m);
+	void ConditionEnableChanged(bool);
 
 private:
 	void SetLogicSelection();
 	std::shared_ptr<MacroSegment> Data() const;
 
+	SwitchButton *_enable;
 	QComboBox *_logicSelection;
 	FilterComboBox *_conditionSelection;
 	DurationModifierEdit *_dur;

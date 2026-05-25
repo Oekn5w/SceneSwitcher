@@ -94,7 +94,6 @@ public:
 	bool stop = false;
 	std::condition_variable cv;
 
-	bool firstBoot = true;
 	bool transitionActive = false;
 	bool sceneCollectionStop = false;
 	bool obsIsShuttingDown = false;
@@ -163,7 +162,6 @@ public:
 	bool warnPluginLoadFailure = true;
 	bool disableHints = false;
 	bool disableFilterComboboxFilter = false;
-	bool disableMacroWidgetCache = false;
 	bool hideLegacyTabs = true;
 	bool saveWindowGeo = false;
 	QPoint windowPos = {};

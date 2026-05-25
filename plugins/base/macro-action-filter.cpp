@@ -10,6 +10,15 @@ namespace advss {
 
 const std::string MacroActionFilter::id = "filter";
 
+std::vector<TempVariableRef> MacroActionFilter::GetTempVarRefs() const
+{
+	auto refs = MacroSegment::GetTempVarRefs();
+	if (_tempVar.HasValidID()) {
+		refs.push_back(_tempVar);
+	}
+	return refs;
+}
+
 bool MacroActionFilter::_registered = MacroActionFactory::Register(
 	MacroActionFilter::id,
 	{MacroActionFilter::Create, MacroActionFilterEdit::Create,
@@ -483,6 +492,7 @@ void MacroActionFilterEdit::SelectionChanged(const TempVariableRef &var)
 {
 	GUARD_LOADING_AND_LOCK();
 	_entryData->_tempVar = var;
+	IncrementTempVarInUseGeneration();
 }
 
 void MacroActionFilterEdit::SelectionChanged(const SourceSetting &setting)

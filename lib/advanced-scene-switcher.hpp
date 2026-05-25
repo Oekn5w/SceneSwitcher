@@ -65,12 +65,13 @@ public slots:
 	void on_showTrayNotifications_stateChanged(int state);
 	void on_uiHintsDisable_stateChanged(int state);
 	void on_disableComboBoxFilter_stateChanged(int state);
-	void on_disableMacroWidgetCache_stateChanged(int state);
 	void on_warnPluginLoadFailure_stateChanged(int state);
+	void on_suppressCrashRecoveryDialog_stateChanged(int state);
 	void on_hideLegacyTabs_stateChanged(int state);
 	void on_priorityUp_clicked();
 	void on_priorityDown_clicked();
 	void on_threadPriority_currentTextChanged(const QString &text);
+	void on_openSetupWizard_clicked();
 
 	/* --- End of legacy tab section --- */
 
@@ -108,7 +109,7 @@ public slots:
 	void on_macroDown_clicked() const;
 	void on_macroName_editingFinished();
 	void on_runMacroInParallel_stateChanged(int value) const;
-	void on_runMacroOnChange_stateChanged(int value) const;
+	void on_actionTriggerMode_currentIndexChanged(int index) const;
 	void MacroSelectionChanged();
 	void ShowMacroContextMenu(const QPoint &);
 	void CopyMacro();

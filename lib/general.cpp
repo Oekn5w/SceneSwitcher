@@ -1,18 +1,19 @@
 #include "advanced-scene-switcher.hpp"
+#include "crash-handler.hpp"
 #include "file-selection.hpp"
 #include "filter-combo-box.hpp"
+#include "first-run-wizard.hpp"
 #include "layout-helpers.hpp"
 #include "macro.hpp"
+#include "macro-search.hpp"
 #include "macro-settings.hpp"
 #include "path-helpers.hpp"
-#include "selection-helpers.hpp"
 #include "source-helpers.hpp"
 #include "splitter-helpers.hpp"
 #include "status-control.hpp"
 #include "switcher-data.hpp"
 #include "tab-helpers.hpp"
 #include "ui-helpers.hpp"
-#include "utility.hpp"
 #include "variable.hpp"
 #include "version.h"
 
@@ -185,16 +186,6 @@ void AdvSceneSwitcher::on_disableComboBoxFilter_stateChanged(int state)
 	FilterComboBox::SetFilterBehaviourEnabled(!state);
 }
 
-void AdvSceneSwitcher::on_disableMacroWidgetCache_stateChanged(int state)
-{
-	if (loading) {
-		return;
-	}
-
-	switcher->disableMacroWidgetCache = state;
-	MacroSegmentList::SetCachingEnabled(!state);
-}
-
 void AdvSceneSwitcher::on_warnPluginLoadFailure_stateChanged(int state)
 {
 	if (loading) {
@@ -202,6 +193,15 @@ void AdvSceneSwitcher::on_warnPluginLoadFailure_stateChanged(int state)
 	}
 
 	switcher->warnPluginLoadFailure = state;
+}
+
+void AdvSceneSwitcher::on_suppressCrashRecoveryDialog_stateChanged(int state)
+{
+	if (loading) {
+		return;
+	}
+
+	SetSuppressCrashDialog(state);
 }
 
 static bool isLegacyTab(const QString &name)
@@ -370,14 +370,50 @@ void AdvSceneSwitcher::RestoreWindowGeo()
 	}
 }
 
+static void renameMacroIfNecessary(const std::shared_ptr<Macro> &macro)
+{
+	if (!GetMacroByName(macro->Name().c_str())) {
+		return;
+	}
+
+	auto name = macro->Name();
+	int i = 2;
+	while (GetMacroByName((name + " " + std::to_string(i)).c_str())) {
+		i++;
+	}
+
+	macro->SetName(name + " " + std::to_string(i));
+}
+
 void AdvSceneSwitcher::CheckFirstTimeSetup()
 {
-	if (switcher->firstBoot && !switcher->disableHints) {
-		switcher->firstBoot = false;
-		DisplayMessage(
-			obs_module_text("AdvSceneSwitcher.firstBootMessage"));
-		switcher->Start();
+	if (!IsFirstRun() || !GetTopLevelMacros().empty()) {
+		return;
 	}
+
+	bool wasSkipped = false;
+	auto macro = FirstRunWizard::ShowWizard(this, &wasSkipped);
+	if (macro) {
+		renameMacroIfNecessary(macro);
+		QTimer::singleShot(0, this,
+				   [this, macro]() { ui->macros->Add(macro); });
+	}
+	if (wasSkipped) {
+		ui->alwaysShowFeatureTabs->setChecked(true);
+	}
+	switcher->Start();
+}
+
+void AdvSceneSwitcher::on_openSetupWizard_clicked()
+{
+	auto macro = FirstRunWizard::ShowWizard(this);
+	if (!macro) {
+		return;
+	}
+
+	renameMacroIfNecessary(macro);
+	ui->macros->Add(macro);
+	ui->tabWidget->setCurrentWidget(ui->macroTab);
 }
 
 void AdvSceneSwitcher::on_tabWidget_currentChanged(int)
@@ -436,7 +472,6 @@ void SwitcherData::LoadSettings(obs_data_t *obj)
 	// Needs to be loaded before any entries which might rely on scene group
 	// selections to be available.
 	loadSceneGroups(obj);
-	LoadVariables(obj);
 
 	RunLoadSteps(obj);
 
@@ -475,7 +510,6 @@ void SwitcherData::SaveSettings(obs_data_t *obj)
 	saveSceneGroups(obj);
 	SaveMacros(obj);
 	SaveGlobalMacroSettings(obj);
-	SaveVariables(obj);
 	saveWindowTitleSwitches(obj);
 	saveScreenRegionSwitches(obj);
 	savePauseSwitches(obj);
@@ -531,8 +565,6 @@ void SwitcherData::SaveGeneralSettings(obs_data_t *obj)
 	obs_data_set_bool(obj, "disableHints", disableHints);
 	obs_data_set_bool(obj, "disableFilterComboboxFilter",
 			  disableFilterComboboxFilter);
-	obs_data_set_bool(obj, "disableMacroWidgetCache",
-			  disableMacroWidgetCache);
 	obs_data_set_bool(obj, "warnPluginLoadFailure", warnPluginLoadFailure);
 	obs_data_set_bool(obj, "hideLegacyTabs", hideLegacyTabs);
 
@@ -602,8 +634,6 @@ void SwitcherData::LoadGeneralSettings(obs_data_t *obj)
 	disableHints = obs_data_get_bool(obj, "disableHints");
 	disableFilterComboboxFilter =
 		obs_data_get_bool(obj, "disableFilterComboboxFilter");
-	disableMacroWidgetCache =
-		obs_data_get_bool(obj, "disableMacroWidgetCache");
 	obs_data_set_default_bool(obj, "warnPluginLoadFailure", true);
 	warnPluginLoadFailure = obs_data_get_bool(obj, "warnPluginLoadFailure");
 	obs_data_set_default_bool(obj, "hideLegacyTabs", true);
@@ -927,10 +957,8 @@ void AdvSceneSwitcher::SetupGeneralTab()
 		switcher->disableFilterComboboxFilter);
 	FilterComboBox::SetFilterBehaviourEnabled(
 		!switcher->disableFilterComboboxFilter);
-	ui->disableMacroWidgetCache->setChecked(
-		switcher->disableMacroWidgetCache);
-	MacroSegmentList::SetCachingEnabled(!switcher->disableMacroWidgetCache);
 	ui->warnPluginLoadFailure->setChecked(switcher->warnPluginLoadFailure);
+	ui->suppressCrashRecoveryDialog->setChecked(GetSuppressCrashDialog());
 	ui->hideLegacyTabs->setChecked(switcher->hideLegacyTabs);
 
 	populatePriorityFunctionList(ui->priorityList);
@@ -1013,6 +1041,19 @@ void AdvSceneSwitcher::SetupGeneralTab()
 			switcher->CheckAutoStart();
 		});
 
+	ui->alwaysShowMacroSearch->setChecked(
+		GetMacroSearchSettings().showAlways);
+
+	connect(ui->alwaysShowMacroSearch, &QCheckBox::stateChanged, this,
+		[this](int enabled) {
+			GetMacroSearchSettings().showAlways = enabled;
+
+			if (loading) {
+				return;
+			}
+			CheckMacroSearchVisibility();
+		});
+
 	// Set up status control
 	auto statusControl = new StatusControl(this, true);
 	ui->statusLayout->addWidget(statusControl->StatusPrefixLabel(), 1, 0);
@@ -1031,6 +1072,8 @@ void AdvSceneSwitcher::SetupGeneralTab()
 	setTabOrder(statusControl->Button(), ui->startupBehavior);
 	setTabOrder(ui->importSettings, ui->cooldownTime);
 	setTabOrder(ui->cooldownTime, ui->noMatchDontSwitch);
+
+	SetupShowAllTabsCheckBox(ui->alwaysShowFeatureTabs, ui->tabWidget);
 
 	MinimizeSizeOfColumn(ui->statusLayout, 0);
 	setWindowTitle(windowTitle() + " - " + g_GIT_TAG);

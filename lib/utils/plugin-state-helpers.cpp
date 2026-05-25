@@ -3,11 +3,41 @@
 #include "macro-signals.hpp"
 #include "switcher-data.hpp"
 
+#include "obs-frontend-api.h"
+
 namespace advss {
 
 static std::mutex initMutex;
 static std::mutex postLoadMutex;
+static std::mutex finishLoadMutex;
 static std::mutex mutex;
+
+static bool setup();
+static bool setupDonw = setup();
+bool loadingFinished = false;
+
+static std::vector<std::function<void()>> &getFinishLoadSteps();
+
+static bool setup()
+{
+	static auto handleEvent = [](enum obs_frontend_event event, void *) {
+		switch (event) {
+		case OBS_FRONTEND_EVENT_FINISHED_LOADING: {
+			std::lock_guard<std::mutex> lock(finishLoadMutex);
+			for (const auto &step : getFinishLoadSteps()) {
+				step();
+			}
+			getFinishLoadSteps().clear();
+			loadingFinished = true;
+			break;
+		}
+		default:
+			break;
+		};
+	};
+	obs_frontend_add_event_callback(handleEvent, nullptr);
+	return true;
+}
 
 static std::vector<std::function<void()>> &getPluginInitSteps()
 {
@@ -45,6 +75,18 @@ static std::vector<std::function<void()>> &getStopSteps()
 	return steps;
 }
 
+static std::vector<std::function<void(obs_data_t *)>> &getEarlySaveSteps()
+{
+	static std::vector<std::function<void(obs_data_t *)>> steps;
+	return steps;
+}
+
+static std::vector<std::function<void(obs_data_t *)>> &getEarlyLoadSteps()
+{
+	static std::vector<std::function<void(obs_data_t *)>> steps;
+	return steps;
+}
+
 static std::vector<std::function<void(obs_data_t *)>> &getSaveSteps()
 {
 	static std::vector<std::function<void(obs_data_t *)>> steps;
@@ -63,6 +105,12 @@ static std::vector<std::function<void()>> &getPostLoadSteps()
 	return steps;
 }
 
+static std::vector<std::function<void()>> &getFinishLoadSteps()
+{
+	static std::vector<std::function<void()>> steps;
+	return steps;
+}
+
 void SavePluginSettings(obs_data_t *obj)
 {
 	GetSwitcher()->SaveSettings(obj);
@@ -71,6 +119,18 @@ void SavePluginSettings(obs_data_t *obj)
 void LoadPluginSettings(obs_data_t *obj)
 {
 	GetSwitcher()->LoadSettings(obj);
+}
+
+void AddEarlySaveStep(std::function<void(obs_data_t *)> step)
+{
+	std::lock_guard<std::mutex> lock(mutex);
+	getEarlySaveSteps().emplace_back(step);
+}
+
+void AddEarlyLoadStep(std::function<void(obs_data_t *)> step)
+{
+	std::lock_guard<std::mutex> lock(mutex);
+	getEarlyLoadSteps().emplace_back(step);
 }
 
 void AddSaveStep(std::function<void(obs_data_t *)> step)
@@ -100,6 +160,9 @@ void AddIntervalResetStep(std::function<void()> step)
 void RunSaveSteps(obs_data_t *obj)
 {
 	std::lock_guard<std::mutex> lock(mutex);
+	for (const auto &func : getEarlySaveSteps()) {
+		func(obj);
+	}
 	for (const auto &func : getSaveSteps()) {
 		func(obj);
 	}
@@ -108,6 +171,9 @@ void RunSaveSteps(obs_data_t *obj)
 void RunLoadSteps(obs_data_t *obj)
 {
 	std::lock_guard<std::mutex> lock(mutex);
+	for (const auto &func : getEarlyLoadSteps()) {
+		func(obj);
+	}
 	for (const auto &func : getLoadSteps()) {
 		func(obj);
 	}
@@ -136,7 +202,7 @@ void AddPluginInitStep(std::function<void()> step)
 
 void AddPluginPostLoadStep(std::function<void()> step)
 {
-	std::lock_guard<std::mutex> lock(initMutex);
+	std::lock_guard<std::mutex> lock(mutex);
 	getPluginPostLoadSteps().emplace_back(step);
 }
 
@@ -176,6 +242,16 @@ void RunIntervalResetSteps()
 	for (const auto &step : getResetIntervalSteps()) {
 		step();
 	}
+}
+
+void AddFinishedLoadingStep(std::function<void()> step)
+{
+	std::lock_guard<std::mutex> lock(finishLoadMutex);
+	if (loadingFinished) {
+		return;
+	}
+
+	getFinishLoadSteps().emplace_back(step);
 }
 
 void AddStartStep(std::function<void()> step)
@@ -264,7 +340,7 @@ bool HighlightUIElementsEnabled()
 
 bool OBSIsShuttingDown()
 {
-	return GetSwitcher() && GetSwitcher()->obsIsShuttingDown;
+	return !GetSwitcher() || GetSwitcher()->obsIsShuttingDown;
 }
 
 bool InitialLoadIsComplete()

@@ -34,10 +34,14 @@ public:
 	explicit MacroTreeItem(MacroTree *tree, std::shared_ptr<Macro> macro,
 			       bool highlight);
 
+protected:
+	bool event(QEvent *) override;
+
 private slots:
 	void ExpandClicked(bool checked);
 	void EnableHighlight(bool enable);
-	void UpdatePaused();
+	void RunningClicked(bool);
+	void UpdateRunning();
 	void HighlightIfExecuted();
 	void MacroRenamed(const QString &, const QString &);
 
@@ -106,7 +110,6 @@ private:
 	void UngroupSelectedGroups(QModelIndexList &indices);
 	void ExpandGroup(std::shared_ptr<Macro> item);
 	void CollapseGroup(std::shared_ptr<Macro> item);
-	void UpdateGroupState(bool update);
 	int GetItemMacroIndex(const std::shared_ptr<Macro> &item) const;
 	int GetItemModelIndex(const std::shared_ptr<Macro> &item) const;
 	bool IsLastItem(std::shared_ptr<Macro> item) const;
@@ -114,7 +117,6 @@ private:
 
 	MacroTree *_mt;
 	std::deque<std::shared_ptr<Macro>> &_macros;
-	bool _hasGroups = false;
 
 	friend class MacroTree;
 	friend class MacroTreeItem;
@@ -142,6 +144,7 @@ public:
 	bool GroupsExist() const;
 	void ExpandGroup(std::shared_ptr<Macro> item) const;
 	void CollapseGroup(std::shared_ptr<Macro> item) const;
+	void RefreshFilter();
 
 public slots:
 	void GroupSelectedItems();

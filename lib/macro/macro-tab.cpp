@@ -1,9 +1,9 @@
 #include "advanced-scene-switcher.hpp"
-#include "action-queue.hpp"
 #include "macro-action-edit.hpp"
 #include "macro-condition-edit.hpp"
 #include "macro-export-import-dialog.hpp"
 #include "macro-settings.hpp"
+#include "macro-search.hpp"
 #include "macro-signals.hpp"
 #include "macro-tree.hpp"
 #include "macro.hpp"
@@ -24,6 +24,8 @@ namespace advss {
 
 static QObject *addPulse = nullptr;
 static QTimer onChangeHighlightTimer;
+static std::chrono::high_resolution_clock::time_point
+	lastOnChangeHighlightCheckTime{};
 
 static void disableAddButtonHighlight()
 {
@@ -146,20 +148,7 @@ void AdvSceneSwitcher::on_macroAdd_clicked()
 static void addGroupSubitems(std::vector<std::shared_ptr<Macro>> &macros,
 			     const std::shared_ptr<Macro> &group)
 {
-	std::vector<std::shared_ptr<Macro>> subitems;
-	subitems.reserve(group->GroupSize());
-
-	// Find all subitems
-	auto allMacros = GetMacros();
-	for (auto it = allMacros.begin(); it < allMacros.end(); it++) {
-		if ((*it)->Name() != group->Name()) {
-			continue;
-		}
-		for (uint32_t i = 1; i <= group->GroupSize(); i++) {
-			subitems.emplace_back(*std::next(it, i));
-		}
-		break;
-	}
+	auto subitems = GetGroupMacroEntries(group.get());
 
 	// Remove subitems which were already selected to avoid duplicates
 	for (const auto &subitem : subitems) {
@@ -207,7 +196,7 @@ void AdvSceneSwitcher::RemoveMacro(std::shared_ptr<Macro> &macro)
 	// Don't cache widgets for about to be deleted macros
 	MacroSegmentList::SetCachingEnabled(false);
 	ui->macros->Remove(macro);
-	MacroSegmentList::SetCachingEnabled(!switcher->disableMacroWidgetCache);
+	MacroSegmentList::SetCachingEnabled(true);
 
 	MacroSignalManager::Instance()->Remove(name);
 }
@@ -326,13 +315,9 @@ void AdvSceneSwitcher::ExportMacros() const
 		obs_data_array_push_back(macroArray, obj);
 	}
 	obs_data_set_array(data, "macros", macroArray);
-	SaveVariables(data);
-	SaveActionQueues(data);
 	obs_data_set_string(data, "version", g_GIT_TAG);
-	auto json = obs_data_get_json(data);
-	QString exportString(json);
 
-	MacroExportImportDialog::ExportMacros(exportString);
+	MacroExportImportDialog::ExportMacros(data);
 }
 
 bool AdvSceneSwitcher::ResolveMacroImportNameConflict(
@@ -394,8 +379,6 @@ void AdvSceneSwitcher::ImportMacros()
 		ImportMacros();
 		return;
 	}
-	ImportVariables(data);
-	ImportQueues(data);
 
 	auto version = obs_data_get_string(data, "version");
 	if (strcmp(version, g_GIT_TAG) != 0) {
@@ -410,11 +393,15 @@ void AdvSceneSwitcher::ImportMacros()
 	int groupSize = 0;
 	std::shared_ptr<Macro> group;
 	std::vector<std::shared_ptr<Macro>> importedMacros;
+	auto &tempMacros = GetTemporaryMacros();
 
 	auto lock = LockContext();
 	for (size_t i = 0; i < count; i++) {
+		tempMacros.clear();
+
 		OBSDataAutoRelease array_obj = obs_data_array_item(array, i);
 		auto macro = std::make_shared<Macro>();
+		tempMacros.emplace_back(macro);
 		macro->Load(array_obj);
 		RunAndClearPostLoadSteps();
 
@@ -425,7 +412,7 @@ void AdvSceneSwitcher::ImportMacros()
 		}
 
 		importedMacros.emplace_back(macro);
-		GetMacros().emplace_back(macro);
+		GetTopLevelMacros().emplace_back(macro);
 		if (groupSize > 0 && !macro->IsGroup()) {
 			Macro::PrepareMoveToGroup(group, macro);
 			groupSize--;
@@ -445,8 +432,9 @@ void AdvSceneSwitcher::ImportMacros()
 		macro->PostLoad();
 	}
 	RunAndClearPostLoadSteps();
+	tempMacros.clear();
 
-	ui->macros->Reset(GetMacros(),
+	ui->macros->Reset(GetTopLevelMacros(),
 			  GetGlobalMacroSettings()._highlightExecuted);
 	disableAddButtonHighlight();
 }
@@ -479,14 +467,17 @@ void AdvSceneSwitcher::on_runMacroInParallel_stateChanged(int value) const
 	macro->SetRunInParallel(value);
 }
 
-void AdvSceneSwitcher::on_runMacroOnChange_stateChanged(int value) const
+void AdvSceneSwitcher::on_actionTriggerMode_currentIndexChanged(int index) const
 {
 	auto macro = GetSelectedMacro();
 	if (!macro) {
 		return;
 	}
+
 	auto lock = LockContext();
-	macro->SetMatchOnChange(value);
+	const auto mode = static_cast<Macro::ActionTriggerMode>(
+		ui->actionTriggerMode->itemData(index).toInt());
+	macro->SetActionTriggerMode(mode);
 }
 
 void AdvSceneSwitcher::SetMacroEditAreaDisabled(bool disable) const
@@ -494,7 +485,7 @@ void AdvSceneSwitcher::SetMacroEditAreaDisabled(bool disable) const
 	ui->macroName->setDisabled(disable);
 	ui->runMacro->setDisabled(disable);
 	ui->runMacroInParallel->setDisabled(disable);
-	ui->runMacroOnChange->setDisabled(disable);
+	ui->actionTriggerMode->setDisabled(disable);
 	ui->macroEdit->SetControlsDisabled(disable);
 }
 
@@ -524,10 +515,12 @@ void AdvSceneSwitcher::MacroSelectionChanged()
 	{
 		const QSignalBlocker b1(ui->macroName);
 		const QSignalBlocker b2(ui->runMacroInParallel);
-		const QSignalBlocker b3(ui->runMacroOnChange);
+		const QSignalBlocker b3(ui->actionTriggerMode);
 		ui->macroName->setText(macro->Name().c_str());
 		ui->runMacroInParallel->setChecked(macro->RunInParallel());
-		ui->runMacroOnChange->setChecked(macro->MatchOnChange());
+		ui->actionTriggerMode->setCurrentIndex(
+			ui->actionTriggerMode->findData(static_cast<int>(
+				macro->GetActionTriggerMode())));
 	}
 
 	macro->ResetUIHelpers();
@@ -557,10 +550,18 @@ void AdvSceneSwitcher::HighlightOnChange() const
 		return;
 	}
 
-	if (macro->OnChangePreventedActionsRecently()) {
-		HighlightWidget(ui->runMacroOnChange, Qt::yellow,
+	if (macro->Paused()) {
+		return;
+	}
+
+	if (macro->ActionTriggerModePreventedActionsSince(
+		    lastOnChangeHighlightCheckTime)) {
+		HighlightWidget(ui->actionTriggerMode, Qt::yellow,
 				Qt::transparent, true);
 	}
+
+	lastOnChangeHighlightCheckTime =
+		std::chrono::high_resolution_clock::now();
 }
 
 void AdvSceneSwitcher::on_macroSettings_clicked()
@@ -610,17 +611,20 @@ setupToolBar(const std::initializer_list<std::initializer_list<QWidget *>>
 	auto toolbar = new QToolBar();
 	toolbar->setIconSize({16, 16});
 
-	QAction *lastSeperator = nullptr;
+	QAction *lastSeparator = nullptr;
 
 	for (const auto &widgetGroup : widgetGroups) {
 		for (const auto &widget : widgetGroup) {
+			if (!widget) {
+				continue;
+			}
 			toolbar->addWidget(widget);
 		}
-		lastSeperator = toolbar->addSeparator();
+		lastSeparator = toolbar->addSeparator();
 	}
 
-	if (lastSeperator) {
-		toolbar->removeAction(lastSeperator);
+	if (lastSeparator) {
+		toolbar->removeAction(lastSeparator);
 	}
 
 	// Prevent "extension" button from showing up
@@ -633,7 +637,9 @@ void AdvSceneSwitcher::SetupMacroTab()
 {
 	ui->macros->installEventFilter(this);
 
-	if (GetMacros().size() == 0 && !switcher->disableHints) {
+	auto &macros = GetTopLevelMacros();
+
+	if (macros.size() == 0 && !switcher->disableHints) {
 		addPulse = HighlightWidget(ui->macroAdd, QColor(Qt::green));
 	}
 
@@ -641,8 +647,7 @@ void AdvSceneSwitcher::SetupMacroTab()
 					   {ui->macroUp, ui->macroDown}});
 	ui->macroControlLayout->addWidget(macroControls);
 
-	ui->macros->Reset(GetMacros(),
-			  GetGlobalMacroSettings()._highlightExecuted);
+	ui->macros->Reset(macros, GetGlobalMacroSettings()._highlightExecuted);
 	connect(ui->macros, SIGNAL(MacroSelectionChanged()), this,
 		SLOT(MacroSelectionChanged()));
 	ui->runMacro->SetMacroTree(ui->macros);
@@ -655,21 +660,55 @@ void AdvSceneSwitcher::SetupMacroTab()
 	ui->macroPriorityWarning->setVisible(
 		switcher->functionNamesByPriority[0] != macro_func);
 
+	lastOnChangeHighlightCheckTime =
+		std::chrono::high_resolution_clock::now();
 	onChangeHighlightTimer.setInterval(1500);
 	connect(&onChangeHighlightTimer, SIGNAL(timeout()), this,
 		SLOT(HighlightOnChange()));
 	onChangeHighlightTimer.start();
 
-	// Reserve more space for macro edit area than for the macro list
-	ui->macroListMacroEditSplitter->setStretchFactor(0, 1);
-	ui->macroListMacroEditSplitter->setStretchFactor(1, 4);
+	SetupMacroSearchWidgets(ui->macroSearchLayout, ui->macroSearchText,
+				ui->macroSearchClear, ui->macroSearchType,
+				ui->macroSearchRegex,
+				ui->macroSearchShowSettings,
+				[this]() { ui->macros->RefreshFilter(); });
 
-	if (switcher->saveWindowGeo) {
-		if (shouldRestoreSplitter(
-			    switcher->macroListMacroEditSplitterPosition)) {
+	static const std::vector<
+		std::pair<Macro::ActionTriggerMode, const char *>>
+		actionTriggerModes = {
+			{Macro::ActionTriggerMode::ALWAYS,
+			 "AdvSceneSwitcher.macroTab.actionTriggerMode.always"},
+			{Macro::ActionTriggerMode::MACRO_RESULT_CHANGED,
+			 "AdvSceneSwitcher.macroTab.actionTriggerMode.onOverallChange"},
+			{Macro::ActionTriggerMode::ANY_CONDITION_CHANGED,
+			 "AdvSceneSwitcher.macroTab.actionTriggerMode.onAnyConditionChange"},
+			{Macro::ActionTriggerMode::ANY_CONDITION_TRIGGERED,
+			 "AdvSceneSwitcher.macroTab.actionTriggerMode.onAnyConditionTriggered"},
+		};
+
+	for (const auto &[mode, name] : actionTriggerModes) {
+		ui->actionTriggerMode->addItem(obs_module_text(name),
+					       static_cast<int>(mode));
+	}
+
+	ui->macroListBox->setSizePolicy(QSizePolicy::Ignored,
+					QSizePolicy::Preferred);
+	ui->macroListBox->setMinimumWidth(0);
+	ui->macroEditGroup->setSizePolicy(QSizePolicy::Ignored,
+					  QSizePolicy::Preferred);
+	ui->macroEditGroup->setMinimumWidth(0);
+
+	if (shouldRestoreSplitter(
+		    switcher->macroListMacroEditSplitterPosition)) {
+		ui->macroListMacroEditSplitter->setSizes(
+			switcher->macroListMacroEditSplitterPosition);
+	} else {
+		QTimer::singleShot(0, this, [this]() {
+			const auto totalWidth =
+				ui->macroListMacroEditSplitter->width();
 			ui->macroListMacroEditSplitter->setSizes(
-				switcher->macroListMacroEditSplitterPosition);
-		}
+				{totalWidth / 5, totalWidth * 4 / 5});
+		});
 	}
 }
 

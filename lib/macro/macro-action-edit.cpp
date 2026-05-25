@@ -28,8 +28,7 @@ static inline void populateActionSelection(QComboBox *list)
 }
 
 MacroActionEdit::MacroActionEdit(QWidget *parent,
-				 std::shared_ptr<MacroAction> *entryData,
-				 const std::string &id)
+				 std::shared_ptr<MacroAction> *entryData)
 	: MacroSegmentEdit(parent),
 	  _actionSelection(new FilterComboBox()),
 	  _enable(new SwitchButton()),
@@ -50,10 +49,12 @@ MacroActionEdit::MacroActionEdit(QWidget *parent,
 	_section->AddHeaderWidget(_enable);
 	_section->AddHeaderWidget(_actionSelection);
 	_section->AddHeaderWidget(_headerInfo);
+	_section->AddHeaderWidget(_varMappingToggle);
 
 	auto actionLayout = new QVBoxLayout;
 	actionLayout->setContentsMargins({7, 7, 7, 7});
 	actionLayout->addWidget(_section);
+	actionLayout->addWidget(_outputMappings);
 	_contentLayout->addLayout(actionLayout);
 
 	auto mainLayout = new QHBoxLayout;
@@ -62,7 +63,6 @@ MacroActionEdit::MacroActionEdit(QWidget *parent,
 	mainLayout->addWidget(_frame);
 	setLayout(mainLayout);
 
-	_entryData = entryData;
 	SetupWidgets(true);
 
 	actionStateTimer->start(300);
@@ -91,7 +91,10 @@ void MacroActionEdit::SetupWidgets(bool basicSetup)
 	auto widget = MacroActionFactory::CreateWidget(id, this, *_entryData);
 	QWidget::connect(widget, SIGNAL(HeaderInfoChanged(const QString &)),
 			 this, SLOT(HeaderInfoChanged(const QString &)));
+	QWidget::connect(widget, SIGNAL(ShowVariableMappings(bool)), this,
+			 SLOT(ShowVariableMappings(bool)));
 	_section->SetContent(widget, (*_entryData)->GetCollapsed());
+	SetupVarMappings((*_entryData).get());
 	SetFocusPolicyOfWidgets();
 
 	_allWidgetsAreSetup = true;
@@ -122,7 +125,10 @@ void MacroActionEdit::ActionSelectionChanged(const QString &text)
 	auto widget = MacroActionFactory::CreateWidget(id, this, *_entryData);
 	QWidget::connect(widget, SIGNAL(HeaderInfoChanged(const QString &)),
 			 this, SLOT(HeaderInfoChanged(const QString &)));
+	QWidget::connect(widget, SIGNAL(ShowVariableMappings(bool)), this,
+			 SLOT(ShowVariableMappings(bool)));
 	_section->SetContent(widget);
+	SetupVarMappings((*_entryData).get());
 	SetFocusPolicyOfWidgets();
 }
 

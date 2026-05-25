@@ -9,8 +9,6 @@
 #include "temp-variable.hpp"
 
 #include <future>
-#include <QString>
-#include <QByteArray>
 #include <string>
 #include <deque>
 #include <memory>
@@ -28,6 +26,16 @@ class Macro {
 
 public:
 	enum class PauseStateSaveBehavior { PERSIST, PAUSE, UNPAUSE };
+	enum class ActionTriggerMode {
+		// Trigger always
+		ALWAYS,
+		// Trigger when macro match result flips
+		MACRO_RESULT_CHANGED,
+		// Trigger when any individual condition changes
+		ANY_CONDITION_CHANGED,
+		// Trigger when any individual condition evaluates to true
+		ANY_CONDITION_TRIGGERED,
+	};
 
 	Macro(const std::string &name = "");
 	Macro(const std::string &name, const GlobalMacroSettings &settings);
@@ -56,8 +64,8 @@ public:
 	bool GetStop() const { return _stop; }
 	void ResetTimers();
 
-	void SetMatchOnChange(bool onChange);
-	bool MatchOnChange() const { return _performActionsOnChange; }
+	void SetActionTriggerMode(ActionTriggerMode);
+	ActionTriggerMode GetActionTriggerMode() const;
 
 	void SetSkipExecOnStart(bool skip) { _skipExecOnStart = skip; }
 	bool SkipExecOnStart() const { return _skipExecOnStart; }
@@ -139,7 +147,8 @@ public:
 	const QList<int> &GetElseActionSplitterPosition() const;
 	bool HasValidSplitterPositions() const;
 	bool WasExecutedSince(const TimePoint &) const;
-	bool OnChangePreventedActionsRecently();
+	bool ActionTriggerModePreventedActionsSince(const TimePoint &) const;
+	TimePoint GetLastExecutionTime() const;
 	void ResetUIHelpers();
 
 	// Hotkeys
@@ -170,6 +179,7 @@ private:
 	TimePoint _lastCheckTime{};
 	TimePoint _lastUnpauseTime{};
 	TimePoint _lastExecutionTime{};
+	TimePoint _lastActionRunModePreventTime{};
 	std::vector<std::thread> _helperThreads;
 
 	std::deque<std::shared_ptr<MacroCondition>> _conditions;
@@ -184,14 +194,13 @@ private:
 	bool _useShortCircuitEvaluation = false;
 	bool _useCustomConditionCheckInterval = false;
 	Duration _customConditionCheckInterval = 0.3;
-	bool _conditionSateChanged = false;
+	bool _actionModeMatch = false;
 
 	bool _runInParallel = false;
 	bool _checkInParallel = false;
 	bool _matched = false;
 	std::future<void> _conditionCheckFuture;
 	bool _lastMatched = false;
-	bool _performActionsOnChange = true;
 	bool _skipExecOnStart = false;
 	bool _stopActionsIfNotDone = false;
 	bool _paused = false;
@@ -201,13 +210,13 @@ private:
 	obs_hotkey_id _unpauseHotkey = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id _togglePauseHotkey = OBS_INVALID_HOTKEY_ID;
 
+	ActionTriggerMode _actionTriggerMode =
+		ActionTriggerMode::MACRO_RESULT_CHANGED;
+
 	PauseStateSaveBehavior _pauseSaveBehavior =
 		PauseStateSaveBehavior::PERSIST;
 
 	MacroInputVariables _inputVariables;
-
-	// UI helpers
-	bool _onPreventedActionExecution = false;
 
 	QList<int> _actionConditionSplitterPosition;
 	QList<int> _elseActionSplitterPosition;
@@ -217,13 +226,9 @@ private:
 
 void LoadMacros(obs_data_t *obj);
 void SaveMacros(obs_data_t *obj);
-std::deque<std::shared_ptr<Macro>> &GetMacros();
 bool CheckMacros();
 bool RunMacros();
 void StopAllMacros();
-Macro *GetMacroByName(const char *name);
-Macro *GetMacroByQString(const QString &name);
-std::weak_ptr<Macro> GetWeakMacroByName(const char *name);
 void InvalidateMacroTempVarValues();
 std::shared_ptr<Macro> GetMacroWithInvalidConditionInterval();
 

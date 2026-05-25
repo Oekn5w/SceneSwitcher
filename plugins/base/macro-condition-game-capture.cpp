@@ -24,6 +24,8 @@ bool MacroConditionGameCapture::CheckCondition()
 		return false;
 	}
 
+	_activeKeeper.SetActive(_keepActive);
+
 	std::lock_guard<std::mutex> lock(_mtx);
 	if (_hooked) {
 		SetTempVarValue("title", _title);
@@ -38,6 +40,7 @@ bool MacroConditionGameCapture::Save(obs_data_t *obj) const
 {
 	MacroCondition::Save(obj);
 	_source.Save(obj);
+	obs_data_set_bool(obj, "keepActive", _keepActive);
 	return true;
 }
 
@@ -45,6 +48,7 @@ bool MacroConditionGameCapture::Load(obs_data_t *obj)
 {
 	MacroCondition::Load(obj);
 	_source.Load(obj);
+	_keepActive = obs_data_get_bool(obj, "keepActive");
 	SetupSignalHandler(OBSGetStrongRef(_source.GetSource()));
 	return true;
 }
@@ -55,17 +59,17 @@ void MacroConditionGameCapture::GetCalldataInfo(calldata_t *cd)
 	if (!calldata_get_string(cd, "title", &title)) {
 		blog(LOG_WARNING, "%s failed to get title", __func__);
 	}
-	_title = title;
+	_title = title ? title : "";
 	const char *className = "";
 	if (!calldata_get_string(cd, "class", &className)) {
 		blog(LOG_WARNING, "%s failed to get class", __func__);
 	}
-	_class = className;
+	_class = className ? className : "";
 	const char *executable = "";
 	if (!calldata_get_string(cd, "executable", &executable)) {
 		blog(LOG_WARNING, "%s failed to get executable", __func__);
 	}
-	_executable = executable;
+	_executable = executable ? executable : "";
 }
 
 void MacroConditionGameCapture::HookedSignalReceived(void *data, calldata_t *cd)
@@ -110,6 +114,9 @@ void MacroConditionGameCapture::SetupSignalHandler(obs_source_t *source)
 	_hookSignal = OBSSignal(sh, "hooked", HookedSignalReceived, this);
 	_unhookSignal = OBSSignal(sh, "unhooked", UnhookedSignalReceived, this);
 	_lastSource = source;
+
+	_activeKeeper.SetActive(_keepActive);
+	_activeKeeper.SetSource(source);
 
 	SetupInitialState(source);
 }
@@ -164,17 +171,33 @@ MacroConditionGameCaptureEdit::MacroConditionGameCaptureEdit(
 	QWidget *parent, std::shared_ptr<MacroConditionGameCapture> entryData)
 	: QWidget(parent),
 	  _sources(new SourceSelectionWidget(this, getGameCaptureSourcesList,
-					     true))
+					     true)),
+	  _keepActive(new QCheckBox(
+		  obs_module_text("AdvSceneSwitcher.keepSourceActive"), this)),
+	  _keepActiveHelp(new HelpIcon(
+		  obs_module_text("AdvSceneSwitcher.keepSourceActive.help"),
+		  this))
 {
 	QWidget::connect(_sources,
 			 SIGNAL(SourceChanged(const SourceSelection &)), this,
 			 SLOT(SourceChanged(const SourceSelection &)));
+	QWidget::connect(_keepActive, SIGNAL(stateChanged(int)), this,
+			 SLOT(KeepActiveChanged(int)));
 
-	auto layout = new QHBoxLayout;
+	auto entryLayout = new QHBoxLayout;
 	PlaceWidgets(
 		obs_module_text("AdvSceneSwitcher.condition.gameCapture.entry"),
-		layout, {{"{{sources}}", _sources}});
-	setLayout(layout);
+		entryLayout, {{"{{sources}}", _sources}});
+
+	auto keepActiveLayout = new QHBoxLayout;
+	keepActiveLayout->addWidget(_keepActive);
+	keepActiveLayout->addWidget(_keepActiveHelp);
+	keepActiveLayout->addStretch();
+
+	auto mainLayout = new QVBoxLayout;
+	mainLayout->addLayout(entryLayout);
+	mainLayout->addLayout(keepActiveLayout);
+	setLayout(mainLayout);
 
 	_entryData = entryData;
 	UpdateEntryData();
@@ -187,9 +210,16 @@ void MacroConditionGameCaptureEdit::SourceChanged(const SourceSelection &source)
 	_entryData->_source = source;
 }
 
+void MacroConditionGameCaptureEdit::KeepActiveChanged(int state)
+{
+	GUARD_LOADING_AND_LOCK();
+	_entryData->_keepActive = state;
+}
+
 void MacroConditionGameCaptureEdit::UpdateEntryData()
 {
 	_sources->SetSource(_entryData->_source);
+	_keepActive->setChecked(_entryData->_keepActive);
 }
 
 } // namespace advss

@@ -17,6 +17,15 @@ namespace advss {
 
 const std::string MacroActionVariable::id = "variable";
 
+std::vector<TempVariableRef> MacroActionVariable::GetTempVarRefs() const
+{
+	auto refs = MacroSegment::GetTempVarRefs();
+	if (_tempVar.HasValidID()) {
+		refs.push_back(_tempVar);
+	}
+	return refs;
+}
+
 bool MacroActionVariable::_registered = MacroActionFactory::Register(
 	MacroActionVariable::id,
 	{MacroActionVariable::Create, MacroActionVariableEdit::Create,
@@ -219,6 +228,43 @@ void MacroActionVariable::GenerateRandomNumber(Variable *var)
 	}
 }
 
+void MacroActionVariable::PickRandomValue(Variable *var)
+{
+	static std::random_device rd;
+	static std::mt19937 gen(rd());
+	static const uint8_t maxIter = 255;
+
+	if (_randomValues.isEmpty()) {
+		return;
+	}
+
+	if (_randomValues.size() == 1) {
+		const auto &value = _randomValues.at(0);
+		var->SetValue(value);
+		_lastRandomValue = value;
+	}
+
+	std::uniform_int_distribution<int> dis(0, _randomValues.size() - 1);
+	StringVariable value = _randomValues.at(dis(gen));
+
+	uint8_t iter = 0;
+	for (; !_allowRepeatValues && iter < maxIter &&
+	       _lastRandomValue.has_value() &&
+	       std::string(value) == _lastRandomValue.value();
+	     iter++) {
+		value = _randomValues.at(dis(gen));
+	}
+
+	if (iter == maxIter) {
+		blog(LOG_INFO,
+		     "giving up picking non-repeat random value after %d tries",
+		     maxIter);
+	}
+
+	var->SetValue(value);
+	_lastRandomValue = value;
+}
+
 struct AskForInputParams {
 	AskForInputParams(const QString &prompt_, const QString &placeholder_)
 		: prompt(prompt_),
@@ -286,6 +332,14 @@ bool MacroActionVariable::PerformAction()
 	case Action::APPEND:
 		apppend(*var, _strValue);
 		break;
+	case Action::COPY_VAR: {
+		auto var2 = _variable2.lock();
+		if (!var2) {
+			return true;
+		}
+		var->SetValue(var2->Value());
+		break;
+	}
 	case Action::APPEND_VAR: {
 		auto var2 = _variable2.lock();
 		if (!var2) {
@@ -450,6 +504,9 @@ bool MacroActionVariable::PerformAction()
 	case Action::RANDOM_NUMBER:
 		GenerateRandomNumber(var.get());
 		return true;
+	case Action::RANDOM_LIST_VALUE:
+		PickRandomValue(var.get());
+		return true;
 	}
 
 	return true;
@@ -490,6 +547,8 @@ bool MacroActionVariable::Save(obs_data_t *obj) const
 	_randomNumberStart.Save(obj, "randomNumberStart");
 	_randomNumberEnd.Save(obj, "randomNumberEnd");
 	obs_data_set_bool(obj, "generateInteger", _generateInteger);
+	_randomValues.Save(obj, "randomValues", "value");
+	obs_data_set_bool(obj, "allowRepeatValues", _allowRepeatValues);
 	_jsonQuery.Save(obj, "jsonQuery");
 	_jsonIndex.Save(obj, "jsonIndex");
 
@@ -548,6 +607,8 @@ bool MacroActionVariable::Load(obs_data_t *obj)
 	_randomNumberStart.Load(obj, "randomNumberStart");
 	_randomNumberEnd.Load(obj, "randomNumberEnd");
 	_generateInteger = obs_data_get_bool(obj, "generateInteger");
+	_randomValues.Load(obj, "randomValues", "value");
+	_allowRepeatValues = obs_data_get_bool(obj, "allowRepeatValues");
 	_jsonQuery.Load(obj, "jsonQuery");
 	_jsonIndex.Load(obj, "jsonIndex");
 
@@ -670,6 +731,8 @@ static inline void populateActionSelection(QComboBox *list)
 		actions = {
 			{MacroActionVariable::Action::SET_VALUE,
 			 "AdvSceneSwitcher.action.variable.type.set"},
+			{MacroActionVariable::Action::COPY_VAR,
+			 "AdvSceneSwitcher.action.variable.type.copy"},
 			{MacroActionVariable::Action::APPEND,
 			 "AdvSceneSwitcher.action.variable.type.append"},
 			{MacroActionVariable::Action::PAD,
@@ -714,6 +777,8 @@ static inline void populateActionSelection(QComboBox *list)
 			 "AdvSceneSwitcher.action.variable.type.roundToInt"},
 			{MacroActionVariable::Action::RANDOM_NUMBER,
 			 "AdvSceneSwitcher.action.variable.type.randomNumber"},
+			{MacroActionVariable::Action::RANDOM_LIST_VALUE,
+			 "AdvSceneSwitcher.action.variable.type.randomListValue"},
 			{true, ""}, // Separator
 
 			{MacroActionVariable::Action::USER_INPUT,
@@ -791,11 +856,10 @@ MacroActionVariableEdit::MacroActionVariableEdit(
 	  _segmentValueStatus(new QLabel()),
 	  _segmentValue(new ResizingPlainTextEdit(this, 10, 1, 1)),
 	  _substringLayout(new QVBoxLayout()),
-	  _subStringIndexEntryLayout(new QHBoxLayout()),
-	  _subStringRegexEntryLayout(new QHBoxLayout()),
+	  _subStringControlsLayout(new QHBoxLayout()),
 	  _subStringStart(new VariableSpinBox(this)),
 	  _subStringSize(new VariableSpinBox(this)),
-	  _substringRegex(new RegexConfigWidget(parent)),
+	  _subStringRegex(new RegexConfigWidget(parent)),
 	  _regexPattern(new ResizingPlainTextEdit(this, 10, 1, 1)),
 	  _regexMatchIdx(new VariableSpinBox(this)),
 	  _findReplaceLayout(new QHBoxLayout()),
@@ -827,7 +891,13 @@ MacroActionVariableEdit::MacroActionVariableEdit(
 		  obs_module_text(
 			  "AdvSceneSwitcher.action.variable.generateInteger"),
 		  this)),
-	  _randomLayout(new QVBoxLayout()),
+	  _randomNumberLayout(new QVBoxLayout()),
+	  _randomValues(new StringListEdit(this)),
+	  _allowRepeatValues(new QCheckBox(
+		  obs_module_text(
+			  "AdvSceneSwitcher.action.variable.type.allowRepeat"),
+		  this)),
+	  _randomValueLayout(new QVBoxLayout()),
 	  _jsonQuery(new VariableLineEdit(this)),
 	  _jsonQueryHelp(new HelpIcon(
 		  obs_module_text(
@@ -863,6 +933,7 @@ MacroActionVariableEdit::MacroActionVariableEdit(
 	_randomNumberStart->setMaximum(9999999999);
 	_randomNumberEnd->setMinimum(-9999999999);
 	_randomNumberEnd->setMaximum(9999999999);
+	_randomValues->SetMaxStringSize(99999999);
 	_jsonIndex->setMaximum(999);
 
 	QWidget::connect(_variables, SIGNAL(SelectionChanged(const QString &)),
@@ -891,7 +962,7 @@ MacroActionVariableEdit::MacroActionVariableEdit(
 		_subStringSize,
 		SIGNAL(NumberVariableChanged(const NumberVariable<int> &)),
 		this, SLOT(SubStringSizeChanged(const NumberVariable<int> &)));
-	QWidget::connect(_substringRegex,
+	QWidget::connect(_subStringRegex,
 			 SIGNAL(RegexConfigChanged(const RegexConfig &)), this,
 			 SLOT(SubStringRegexChanged(const RegexConfig &)));
 	QWidget::connect(_regexPattern, SIGNAL(textChanged()), this,
@@ -951,6 +1022,11 @@ MacroActionVariableEdit::MacroActionVariableEdit(
 		SLOT(RandomNumberEndChanged(const NumberVariable<double> &)));
 	QWidget::connect(_generateInteger, SIGNAL(stateChanged(int)), this,
 			 SLOT(GenerateIntegerChanged(int)));
+	QWidget::connect(_randomValues,
+			 SIGNAL(StringListChanged(const StringList &)), this,
+			 SLOT(RandomValueListChanged(const StringList &)));
+	QWidget::connect(_allowRepeatValues, SIGNAL(stateChanged(int)), this,
+			 SLOT(AllowRepeatValuesChanged(int)));
 	QWidget::connect(_jsonQuery, SIGNAL(editingFinished()), this,
 			 SLOT(JsonQueryChanged()));
 	QWidget::connect(
@@ -965,9 +1041,6 @@ MacroActionVariableEdit::MacroActionVariableEdit(
 		{"{{strValue}}", _strValue},
 		{"{{numValue}}", _numValue},
 		{"{{segmentIndex}}", _segmentIdx},
-		{"{{subStringStart}}", _subStringStart},
-		{"{{subStringSize}}", _subStringSize},
-		{"{{regexMatchIdx}}", _regexMatchIdx},
 		{"{{findRegex}}", _findRegex},
 		{"{{findStr}}", _findStr},
 		{"{{replaceStr}}", _replaceStr},
@@ -999,12 +1072,7 @@ MacroActionVariableEdit::MacroActionVariableEdit(
 	PlaceWidgets(
 		obs_module_text(
 			"AdvSceneSwitcher.action.variable.layout.substringIndex"),
-		_subStringIndexEntryLayout, widgetPlaceholders);
-
-	PlaceWidgets(
-		obs_module_text(
-			"AdvSceneSwitcher.action.variable.layout.substringRegex"),
-		_subStringRegexEntryLayout, widgetPlaceholders);
+		_subStringControlsLayout, widgetPlaceholders);
 
 	PlaceWidgets(
 		obs_module_text(
@@ -1025,15 +1093,17 @@ MacroActionVariableEdit::MacroActionVariableEdit(
 		obs_module_text(
 			"AdvSceneSwitcher.action.variable.layout.randomNumber"),
 		randomLayout, widgetPlaceholders);
-	_randomLayout->addLayout(randomLayout);
-	_randomLayout->addWidget(_generateInteger);
+	_randomNumberLayout->addLayout(randomLayout);
+	_randomNumberLayout->addWidget(_generateInteger);
+
+	_randomValueLayout->addWidget(_randomValues);
+	_randomValueLayout->addWidget(_allowRepeatValues);
 
 	auto regexConfigLayout = new QHBoxLayout;
-	regexConfigLayout->addWidget(_substringRegex);
+	regexConfigLayout->addWidget(_subStringRegex);
 	regexConfigLayout->addStretch();
 
-	_substringLayout->addLayout(_subStringIndexEntryLayout);
-	_substringLayout->addLayout(_subStringRegexEntryLayout);
+	_substringLayout->addLayout(_subStringControlsLayout);
 	_substringLayout->addWidget(_regexPattern);
 	_substringLayout->addLayout(regexConfigLayout);
 
@@ -1046,7 +1116,8 @@ MacroActionVariableEdit::MacroActionVariableEdit(
 	layout->addWidget(_mathExpressionResult);
 	layout->addLayout(_promptLayout);
 	layout->addLayout(_placeholderLayout);
-	layout->addLayout(_randomLayout);
+	layout->addLayout(_randomNumberLayout);
+	layout->addLayout(_randomValueLayout);
 	setLayout(layout);
 
 	_entryData = entryData;
@@ -1080,7 +1151,7 @@ void MacroActionVariableEdit::UpdateEntryData()
 			: MacroSegmentSelection::Type::ACTION);
 	_subStringStart->SetValue(_entryData->_subStringStart);
 	_subStringSize->SetValue(_entryData->_subStringSize);
-	_substringRegex->SetRegexConfig(_entryData->_subStringRegex);
+	_subStringRegex->SetRegexConfig(_entryData->_subStringRegex);
 	_findRegex->SetRegexConfig(_entryData->_findRegex);
 	_regexPattern->setPlainText(
 		QString::fromStdString(_entryData->_regexPattern));
@@ -1105,6 +1176,8 @@ void MacroActionVariableEdit::UpdateEntryData()
 	_randomNumberStart->SetValue(_entryData->_randomNumberStart);
 	_randomNumberEnd->SetValue(_entryData->_randomNumberEnd);
 	_generateInteger->setChecked(_entryData->_generateInteger);
+	_allowRepeatValues->setChecked(_entryData->_allowRepeatValues);
+	_randomValues->SetStringList(_entryData->_randomValues);
 	_jsonQuery->setText(_entryData->_jsonQuery);
 	_jsonIndex->SetValue(_entryData->_jsonIndex);
 
@@ -1386,6 +1459,7 @@ void MacroActionVariableEdit::SelectionChanged(const TempVariableRef &var)
 {
 	GUARD_LOADING_AND_LOCK();
 	_entryData->_tempVar = var;
+	IncrementTempVarInUseGeneration();
 	SetWidgetVisibility();
 }
 
@@ -1447,6 +1521,18 @@ void MacroActionVariableEdit::GenerateIntegerChanged(int value)
 	_entryData->_generateInteger = value;
 }
 
+void MacroActionVariableEdit::RandomValueListChanged(const StringList &values)
+{
+	GUARD_LOADING_AND_LOCK();
+	_entryData->_randomValues = values;
+}
+
+void MacroActionVariableEdit::AllowRepeatValuesChanged(int value)
+{
+	GUARD_LOADING_AND_LOCK();
+	_entryData->_allowRepeatValues = value;
+}
+
 void MacroActionVariableEdit::JsonQueryChanged()
 {
 	GUARD_LOADING_AND_LOCK();
@@ -1485,7 +1571,19 @@ void MacroActionVariableEdit::SetWidgetVisibility()
 		{"{{jsonQuery}}", _jsonQuery},
 		{"{{jsonQueryHelp}}", _jsonQueryHelp},
 		{"{{jsonIndex}}", _jsonIndex},
+		{"{{subStringRegex}}", _subStringRegex},
+		{"{{subStringStart}}", _subStringStart},
+		{"{{subStringSize}}", _subStringSize},
+		{"{{regexMatchIdx}}", _regexMatchIdx},
 	};
+
+	for (const auto &[_, widget] : widgetPlaceholders) {
+		_entryLayout->removeWidget(widget);
+		_subStringControlsLayout->removeWidget(widget);
+	}
+
+	ClearLayout(_entryLayout);
+	ClearLayout(_subStringControlsLayout);
 
 	const char *layoutString = "";
 	if (_entryData->_action == MacroActionVariable::Action::PAD) {
@@ -1500,11 +1598,6 @@ void MacroActionVariableEdit::SetWidgetVisibility()
 			"AdvSceneSwitcher.action.variable.layout.other");
 	}
 
-	for (const auto &[_, widget] : widgetPlaceholders) {
-		_entryLayout->removeWidget(widget);
-	}
-
-	ClearLayout(_entryLayout);
 	PlaceWidgets(layoutString, _entryLayout, widgetPlaceholders);
 
 	if (_entryData->_action == MacroActionVariable::Action::SET_VALUE ||
@@ -1521,6 +1614,7 @@ void MacroActionVariableEdit::SetWidgetVisibility()
 	}
 
 	_variables2->setVisible(
+		_entryData->_action == MacroActionVariable::Action::COPY_VAR ||
 		_entryData->_action ==
 			MacroActionVariable::Action::APPEND_VAR ||
 		_entryData->_action ==
@@ -1550,15 +1644,25 @@ void MacroActionVariableEdit::SetWidgetVisibility()
 			MacroActionVariable::Action::SET_ACTION_VALUE ||
 		_entryData->_action ==
 			MacroActionVariable::Action::SET_CONDITION_VALUE);
+
+	bool showRegex = _entryData->_subStringRegex.Enabled();
+	layoutString =
+		showRegex
+			? "AdvSceneSwitcher.action.variable.layout.substringRegex"
+			: "AdvSceneSwitcher.action.variable.layout.substringIndex";
+	PlaceWidgets(obs_module_text(layoutString), _subStringControlsLayout,
+		     widgetPlaceholders);
+	_subStringStart->setVisible(!showRegex);
+	_subStringSize->setVisible(!showRegex);
+	_regexMatchIdx->setVisible(showRegex);
+
 	SetLayoutVisible(_substringLayout,
 			 _entryData->_action ==
 				 MacroActionVariable::Action::SUBSTRING);
-	if (_entryData->_action == MacroActionVariable::Action::SUBSTRING) {
-		bool showRegex = _entryData->_subStringRegex.Enabled();
-		SetLayoutVisible(_subStringIndexEntryLayout, !showRegex);
-		SetLayoutVisible(_subStringRegexEntryLayout, showRegex);
-		_regexPattern->setVisible(showRegex);
-	}
+	_regexPattern->setVisible(
+		showRegex &&
+		_entryData->_action == MacroActionVariable::Action::SUBSTRING);
+
 	SetLayoutVisible(_findReplaceLayout,
 			 _entryData->_action ==
 				 MacroActionVariable::Action::FIND_AND_REPLACE);
@@ -1623,9 +1727,13 @@ void MacroActionVariableEdit::SetWidgetVisibility()
 					  MacroActionVariable::Action::PAD);
 	_caseType->setVisible(_entryData->_action ==
 			      MacroActionVariable::Action::CHANGE_CASE);
-	SetLayoutVisible(_randomLayout,
+	SetLayoutVisible(_randomNumberLayout,
 			 _entryData->_action ==
 				 MacroActionVariable::Action::RANDOM_NUMBER);
+	SetLayoutVisible(
+		_randomValueLayout,
+		_entryData->_action ==
+			MacroActionVariable::Action::RANDOM_LIST_VALUE);
 	_jsonQuery->setVisible(_entryData->_action ==
 			       MacroActionVariable::Action::QUERY_JSON);
 	_jsonQueryHelp->setVisible(_entryData->_action ==

@@ -12,6 +12,7 @@
 #include <variable-line-edit.hpp>
 #include <variable-text-edit.hpp>
 #include <duration-control.hpp>
+#include <duration.hpp>
 
 namespace advss {
 
@@ -142,7 +143,8 @@ public:
 		SEND_CHAT_MESSAGE = 5000,
 
 		// Get user info
-		USER_GET_INFO = 6000
+		USER_GET_INFO = 6000,
+		CHANNEL_GET_INFO = 6100,
 	};
 
 	enum class AnnouncementColor {
@@ -181,11 +183,13 @@ public:
 	StringVariable _announcementMessage = obs_module_text(
 		"AdvSceneSwitcher.action.twitch.announcement.message");
 	AnnouncementColor _announcementColor = AnnouncementColor::PRIMARY;
+	int _nonModDelayDuration = 2;
 	TwitchChannel _channel;
 	StringVariable _chatMessage;
 	UserInfoQueryType _userInfoQueryType = UserInfoQueryType::LOGIN;
 	StringVariable _userLogin = "user login";
 	DoubleVariable _userId = 0;
+	StringVariable _banReason = "";
 	TwitchPointsReward _pointsReward;
 	std::weak_ptr<Variable> _rewardVariable;
 	bool _useVariableForRewardSelection = false;
@@ -197,13 +201,14 @@ private:
 	void CreateStreamClip(const std::shared_ptr<TwitchToken> &) const;
 	void StartCommercial(const std::shared_ptr<TwitchToken> &) const;
 	void SendChatAnnouncement(const std::shared_ptr<TwitchToken> &) const;
-	void SetChatEmoteOnlyMode(const std::shared_ptr<TwitchToken> &,
-				  bool enable) const;
 	void StartRaid(const std::shared_ptr<TwitchToken> &);
 	void SendChatMessage(const std::shared_ptr<TwitchToken> &);
 	void GetUserInfo(const std::shared_ptr<TwitchToken> &);
 	void GetRewardInfo(const std::shared_ptr<TwitchToken> &);
+	void GetChannelInfo(const std::shared_ptr<TwitchToken> &token);
 
+	std::optional<std::string>
+	GetTargetUserID(const std::shared_ptr<TwitchToken> &) const;
 	bool ResolveVariableSelectionToRewardId(
 		const std::shared_ptr<TwitchToken> &);
 
@@ -249,17 +254,20 @@ private slots:
 	void DurationChanged(const Duration &);
 	void AnnouncementMessageChanged();
 	void AnnouncementColorChanged(int index);
+	void NonModDelayDurationChanged(int index);
 	void ChannelChanged(const TwitchChannel &);
 	void ChatMessageChanged();
 	void UserInfoQueryTypeChanged(int);
 	void UserLoginChanged();
 	void UserIdChanged(const NumberVariable<double> &);
+	void BanReasonChanged();
 	void PointsRewardChanged(const TwitchPointsReward &);
 	void RewardVariableChanged(const QString &);
 	void ToggleRewardSelection(bool);
 
 signals:
 	void HeaderInfoChanged(const QString &);
+	void ShowVariableMappings(bool show);
 
 protected:
 	std::shared_ptr<MacroActionTwitch> _entryData;
@@ -272,6 +280,8 @@ private:
 	void SetTokenWarning(bool visible, const QString &text = "");
 
 	QHBoxLayout *_layout;
+	QWidget *_userModerationRow;
+	QHBoxLayout *_layout2;
 	FilterComboBox *_actions;
 	TwitchConnectionSelection *_tokens;
 	QLabel *_tokenWarning;
@@ -286,6 +296,7 @@ private:
 	DurationSelection *_duration;
 	VariableTextEdit *_announcementMessage;
 	QComboBox *_announcementColor;
+	QComboBox *_nonModDelayDuration;
 	TwitchChannelSelection *_channel;
 	VariableTextEdit *_chatMessage;
 	QComboBox *_userInfoQueryType;
@@ -293,6 +304,7 @@ private:
 	// QSpinBox uses int internally, which is too small for Twitch IDs, so
 	// we use QDoubleSpinBox instead
 	VariableDoubleSpinBox *_userId;
+	VariableLineEdit *_banReason;
 	TwitchPointsRewardWidget *_pointsReward;
 	VariableSelection *_rewardVariable;
 	QPushButton *_toggleRewardSelection;

@@ -1,5 +1,6 @@
 #include "advanced-scene-switcher.hpp"
 #include "backup.hpp"
+#include "crash-handler.hpp"
 #include "log-helper.hpp"
 #include "macro-helpers.hpp"
 #include "obs-module-helper.hpp"
@@ -40,9 +41,12 @@ AdvSceneSwitcher::AdvSceneSwitcher(QWidget *parent)
 {
 	switcher->settingsWindowOpened = true;
 	ui->setupUi(this);
-	std::lock_guard<std::mutex> lock(switcher->m);
-	switcher->Prune();
-	LoadUI();
+	{
+		std::lock_guard<std::mutex> lock(switcher->m);
+		switcher->Prune();
+		LoadUI();
+	}
+	CheckFirstTimeSetup();
 }
 
 AdvSceneSwitcher::~AdvSceneSwitcher()
@@ -138,7 +142,6 @@ void AdvSceneSwitcher::LoadUI()
 	SetTabOrder(ui->tabWidget);
 	SetCurrentTab(ui->tabWidget);
 	RestoreWindowGeo();
-	CheckFirstTimeSetup();
 
 	loading = false;
 }
@@ -191,25 +194,21 @@ static void SaveSceneSwitcher(obs_data_t *save_data, bool saving, void *)
 
 		switcher->m.lock();
 		if (switcher->VersionChanged(data, g_GIT_SHA1)) {
-			auto json = obs_data_get_json(data);
-			static QString jsonQString = json ? json : "";
-			std::thread t([]() {
-				obs_queue_task(
-					OBS_TASK_UI,
-					[](void *) {
-						AskForBackup(jsonQString);
-					},
-					nullptr, false);
-			});
-			t.detach();
+			AskForBackup(data);
 		}
 
 		switcher->LoadSettings(data);
 		switcher->m.unlock();
 
-		if (!switcher->stop) {
-			switcher->Start();
+		if (switcher->stop) {
+			return;
 		}
+
+		if (ShouldSkipPluginStartOnUncleanShutdown()) {
+			return;
+		}
+
+		switcher->Start();
 	}
 }
 
@@ -325,8 +324,7 @@ void SwitcherData::SetPreconditions()
 {
 	// Window title
 	lastTitle = currentTitle;
-	std::string title;
-	GetCurrentWindowTitle(title);
+	auto title = GetCurrentWindowTitle();
 	for (auto &window : ignoreWindowsSwitches) {
 		bool equals = (title == window);
 		bool matches = false;
@@ -346,7 +344,7 @@ void SwitcherData::SetPreconditions()
 	currentTitle = title;
 
 	// Process name
-	GetForegroundProcessName(currentForegroundProcess);
+	currentForegroundProcess = GetForegroundProcessName();
 
 	// Macro
 	InvalidateMacroTempVarValues();
@@ -421,7 +419,7 @@ bool SwitcherData::CheckForMatch(OBSWeakSource &scene,
 
 static void ResetMacros()
 {
-	for (auto &m : GetMacros()) {
+	for (auto &m : GetTopLevelMacros()) {
 		ResetMacroRunCount(m.get());
 		ResetMacroConditionTimers(m.get());
 	}
@@ -510,6 +508,8 @@ bool SwitcherData::AnySceneTransitionStarted()
  ******************************************************************************/
 extern "C" EXPORT void FreeSceneSwitcher()
 {
+	switcher->Stop();
+
 	PlatformCleanup();
 	RunPluginCleanupSteps();
 
@@ -631,13 +631,20 @@ static void handleSceneCollectionCleanup()
 		return;
 	}
 
+	// OBS_FRONTEND_EVENT_SCENE_COLLECTION_CLEANUP is also called on
+	// shutdown.
+	// Here we also don't want to clear the settings.
+	if (switcher->obsIsShuttingDown) {
+		return;
+	}
+
 	SaveSceneSwitcher(nullptr, false, nullptr);
 }
 
 // Note to future self:
 // be careful using switcher->m here as there is potential for deadlocks when using
 // frontend functions such as obs_frontend_set_current_scene()
-static void OBSEvent(enum obs_frontend_event event, void *switcher)
+static void OBSEvent(enum obs_frontend_event event, void *)
 {
 	if (!switcher) {
 		return;
@@ -771,8 +778,6 @@ void HighlightMacroSettingsButton(bool enable)
 		enable);
 }
 
-void SetupActionQueues();
-
 extern "C" EXPORT void InitSceneSwitcher(obs_module_t *module,
 					 translateFunc translate)
 {
@@ -784,12 +789,11 @@ extern "C" EXPORT void InitSceneSwitcher(obs_module_t *module,
 	PlatformInit();
 	LoadPlugins();
 	SetupDock();
-	SetupActionQueues();
 
 	RunPluginInitSteps();
 
 	obs_frontend_add_save_callback(SaveSceneSwitcher, nullptr);
-	obs_frontend_add_event_callback(OBSEvent, switcher);
+	obs_frontend_add_event_callback(OBSEvent, nullptr);
 
 	QAction *action = (QAction *)obs_frontend_add_tools_menu_qaction(
 		obs_module_text("AdvSceneSwitcher.pluginName"));

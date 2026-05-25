@@ -2,6 +2,7 @@
 #include "export-symbol-helper.hpp"
 #include "list-controls.hpp"
 
+#include <QLabel>
 #include <QListWidget>
 #include <QLayout>
 
@@ -13,9 +14,13 @@ class ADVSS_EXPORT ListEditor : public QWidget {
 public:
 	ListEditor(QWidget *parent = nullptr, bool reorder = true);
 	int count() const { return _list->count(); };
+	void SetPlaceholderText(const QString &text);
+	void SetMinListHeight(int);
+	void SetMaxListHeight(int);
 
 protected:
 	void showEvent(QShowEvent *);
+	bool eventFilter(QObject *, QEvent *);
 
 private slots:
 	virtual void Add() = 0;
@@ -23,6 +28,7 @@ private slots:
 	virtual void Up(){};
 	virtual void Down(){};
 	virtual void Clicked(QListWidgetItem *) {}
+	void UpdatePlaceholder();
 
 protected:
 	void UpdateListSize();
@@ -31,6 +37,11 @@ protected:
 	QListWidget *_list;
 	ListControls *_controls;
 	QVBoxLayout *_mainLayout;
+
+private:
+	QLabel *_placeholder;
+	int _minHeight = -1;
+	int _maxHeight = -1;
 };
 
 } // namespace advss

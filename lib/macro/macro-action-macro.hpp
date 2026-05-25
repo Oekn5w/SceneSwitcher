@@ -5,10 +5,13 @@
 #include "macro-input.hpp"
 #include "macro-selection.hpp"
 #include "macro-segment-selection.hpp"
+#include "regex-config.hpp"
 #include "resizable-widget.hpp"
+#include "variable-line-edit.hpp"
 
 #include <QCheckBox>
 #include <QHBoxLayout>
+#include <QLabel>
 
 namespace advss {
 
@@ -54,15 +57,31 @@ public:
 		TOGGLE_ACTION,
 		TOGGLE_PAUSE,
 		NESTED_MACRO,
+		GET_INFO,
+		RUN_MACRO,
 	};
-	Action _action = Action::NESTED_MACRO;
+
+	void SetAction(Action);
+	Action GetAction() const { return _action; }
+
+	enum class SelectionType { INDEX, LABEL, ID };
+
+	SelectionType _actionSelectionType = SelectionType::INDEX;
+	bool _useElseSection = false;
 	IntVariable _actionIndex = 1;
+	StringVariable _label = "Custom label";
+	std::string _actionId;
+	RegexConfig _regex;
 	RunOptions _runOptions = {};
 	std::shared_ptr<Macro> _nestedMacro = std::make_shared<Macro>();
 	int _customWidgetHeight = 0;
 
 private:
+	void SetupTempVars();
 	void RunActions(Macro *actionMacro) const;
+	void AdjustActionState(Macro *) const;
+
+	Action _action = Action::NESTED_MACRO;
 
 	static bool _registered;
 	static const std::string id;
@@ -82,11 +101,15 @@ public:
 private slots:
 	void MacroChanged(const QString &text);
 	void ActionChanged(int value);
+	void ActionSelectionTypeChanged(int value);
 	void ActionIndexChanged(const IntVariable &value);
+	void LabelChanged();
+	void ActionTypeChanged(int value);
+	void RegexChanged(const RegexConfig &);
 	void ConditionMacroChanged(const QString &text);
 	void ConditionBehaviorChanged(int value);
 	void ReevaluateConditionStateChanged(int value);
-	void ActionTypeChanged(int value);
+	void ActionSectionChanged(int value);
 	void SkipWhenPausedChanged(int value);
 	void SetInputsChanged(int value);
 	void InputsChanged(const StringList &);
@@ -98,14 +121,20 @@ private:
 	void SetWidgetVisibility();
 	void SetupMacroInput(Macro *) const;
 
-	MacroSelection *_macros;
-	MacroSegmentSelection *_actionIndex;
 	QComboBox *_actions;
+	MacroSelection *_macros;
+	QComboBox *_actionSelectionType;
+	MacroSegmentSelection *_actionIndex;
+	VariableLineEdit *_label;
+	FilterComboBox *_actionTypes;
+	RegexConfigWidget *_regex;
 	MacroSelection *_conditionMacros;
 	QComboBox *_conditionBehaviors;
 	QCheckBox *_reevaluateConditionState;
-	QComboBox *_actionTypes;
+	QComboBox *_actionSections;
 	QCheckBox *_skipWhenPaused;
+	QLabel *_noConditionsWarning;
+	HelpIcon *_runMacroHelp;
 	QCheckBox *_setInputs;
 	MacroInputEdit *_inputs;
 	QHBoxLayout *_entryLayout;

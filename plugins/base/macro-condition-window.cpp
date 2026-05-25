@@ -14,93 +14,93 @@ bool MacroConditionWindow::_registered = MacroConditionFactory::Register(
 	{MacroConditionWindow::Create, MacroConditionWindowEdit::Create,
 	 "AdvSceneSwitcher.condition.window"});
 
-static bool windowContainsText(const std::string &window,
-			       const std::string &matchText,
-			       const RegexConfig &regex)
+void MacroConditionWindow::SetCheckText(bool value)
 {
-	auto text = GetTextInWindow(window);
-	if (!text.has_value()) {
-		return false;
-	}
+#ifdef _WIN32
+	_checkText = value;
+#else
+	(void)value;
+	_checkText = false;
+#endif
+	SetupTempVars();
+}
 
-	if (regex.Enabled()) {
-		return regex.Matches(*text, matchText);
-	}
-	return text == matchText;
+bool MacroConditionWindow::GetCheckText()
+{
+	return _checkText;
 }
 
 bool MacroConditionWindow::WindowMatchesRequirements(
-	const std::string &window) const
+	const WindowInfo &info) const
 {
-	const bool focusCheckOK =
-		(!_focus || window == ForegroundWindowTitle());
-	if (!focusCheckOK) {
+	if (_focus && !info.focused) {
 		return false;
 	}
-	const bool fullscreenCheckOK = (!_fullscreen || IsFullscreen(window));
-	if (!fullscreenCheckOK) {
+	if (_fullscreen && !info.fullscreen) {
 		return false;
 	}
-	const bool maxCheckOK = (!_maximized || IsMaximized(window));
-	if (!maxCheckOK) {
+	if (_maximized && !info.maximized) {
 		return false;
 	}
-	const bool textCheckOK =
-		(!_checkText || windowContainsText(window, _text, _textRegex));
-	if (!textCheckOK) {
-		return false;
+	if (_checkText) {
+		if (!info.text.has_value()) {
+			return false;
+		}
+		if (_textRegex.Enabled()) {
+			if (!_textRegex.Matches(*info.text, _text)) {
+				return false;
+			}
+		} else {
+			if (*info.text != std::string(_text)) {
+				return false;
+			}
+		}
 	}
-
 	return true;
 }
 
-bool MacroConditionWindow::WindowMatches(
-	const std::vector<std::string> &windowList)
+bool MacroConditionWindow::FindMatch(const std::vector<WindowInfo> &windows)
 {
-	bool match = !_checkTitle ||
-		     std::find(windowList.begin(), windowList.end(),
-			       std::string(_window)) != windowList.end();
-	match = match && WindowMatchesRequirements(_window);
-	SetVariableValueBasedOnMatch(_window);
-	return match;
-}
-
-#ifdef _WIN32
-std::string GetWindowClassByWindowTitle(const std::string &window);
-#endif
-
-bool MacroConditionWindow::WindowRegexMatches(
-	const std::vector<std::string> &windowList)
-{
-	// No need to test if checking for window title is required as if the
-	// user has disabled window title matching the option will always be
-	// enabled in the backend and use the regular expression ".*".
-
-	for (const auto &window : windowList) {
-		if (_windowRegex.Matches(window, _window) &&
-		    WindowMatchesRequirements(window)) {
-			SetVariableValueBasedOnMatch(window);
-			return true;
+	// When regex is enabled the title check is always active (the backend
+	// uses ".*" when the user disables the title check), so we can use a
+	// single predicate for both modes.
+	for (const auto &info : windows) {
+		const bool titleOK =
+			_windowRegex.Enabled()
+				? _windowRegex.Matches(info.title, _window)
+				: (!_checkTitle ||
+				   info.title == std::string(_window));
+		if (!titleOK || !WindowMatchesRequirements(info)) {
+			continue;
 		}
+		SetVariableValueBasedOnMatch(&info);
+		return true;
 	}
-	SetVariableValueBasedOnMatch("");
+	SetVariableValueBasedOnMatch(nullptr);
 	return false;
 }
 
-void MacroConditionWindow::SetVariableValueBasedOnMatch(
-	const std::string &matchWindow)
+void MacroConditionWindow::SetVariableValueBasedOnMatch(const WindowInfo *info)
 {
-	SetTempVarValue("window", matchWindow);
+	const std::string title = info ? info->title : "";
+	SetTempVarValue("window", title);
+	SetTempVarValue("windowX", info ? std::to_string(info->x) : "");
+	SetTempVarValue("windowY", info ? std::to_string(info->y) : "");
+	SetTempVarValue("windowWidth", info ? std::to_string(info->width) : "");
+	SetTempVarValue("windowHeight",
+			info ? std::to_string(info->height) : "");
 #ifdef _WIN32
-	SetTempVarValue("windowClass",
-			GetWindowClassByWindowTitle(matchWindow));
+	SetTempVarValue("windowClass", info ? info->windowClass : "");
+	if (_checkText) {
+		SetTempVarValue("windowText",
+				(info && info->text) ? *info->text : "");
+	}
 #endif
 	if (!IsReferencedInVars()) {
 		return;
 	}
 	if (_checkText) {
-		auto text = GetTextInWindow(matchWindow);
-		SetVariableValue(text.value_or(""));
+		SetVariableValue((info && info->text) ? *info->text : "");
 	} else {
 		SetVariableValue(ForegroundWindowTitle());
 	}
@@ -113,14 +113,18 @@ static bool foregroundWindowChanged()
 
 bool MacroConditionWindow::CheckCondition()
 {
-	std::vector<std::string> windowList;
-	GetWindowList(windowList);
-	bool match = false;
-	if (_windowRegex.Enabled()) {
-		match = WindowRegexMatches(windowList);
-	} else {
-		match = WindowMatches(windowList);
-	}
+	WindowQueryOptions options;
+	options.focus = _focus;
+	options.fullscreen = _fullscreen;
+	options.maximized = _maximized;
+	options.geometry = true;
+#ifdef _WIN32
+	options.windowClass = true;
+	options.text = _checkText;
+#endif
+
+	const auto windows = GetWindows(options);
+	bool match = FindMatch(windows);
 	match = match && (!_windowFocusChanged || foregroundWindowChanged());
 	return match;
 }
@@ -180,12 +184,42 @@ void MacroConditionWindow::SetupTempVars()
 		obs_module_text("AdvSceneSwitcher.tempVar.window.window"),
 		obs_module_text(
 			"AdvSceneSwitcher.tempVar.window.window.description"));
+	AddTempvar(
+		"windowX",
+		obs_module_text("AdvSceneSwitcher.tempVar.window.windowX"),
+		obs_module_text(
+			"AdvSceneSwitcher.tempVar.window.windowX.description"));
+	AddTempvar(
+		"windowY",
+		obs_module_text("AdvSceneSwitcher.tempVar.window.windowY"),
+		obs_module_text(
+			"AdvSceneSwitcher.tempVar.window.windowY.description"));
+	AddTempvar(
+		"windowWidth",
+		obs_module_text("AdvSceneSwitcher.tempVar.window.windowWidth"),
+		obs_module_text(
+			"AdvSceneSwitcher.tempVar.window.windowWidth.description"));
+	AddTempvar(
+		"windowHeight",
+		obs_module_text("AdvSceneSwitcher.tempVar.window.windowHeight"),
+		obs_module_text(
+			"AdvSceneSwitcher.tempVar.window.windowHeight.description"));
 #ifdef _WIN32
 	AddTempvar(
 		"windowClass",
 		obs_module_text("AdvSceneSwitcher.tempVar.window.windowClass"),
 		obs_module_text(
 			"AdvSceneSwitcher.tempVar.window.windowClass.description"));
+
+	if (!_checkText) {
+		return;
+	}
+
+	AddTempvar(
+		"windowText",
+		obs_module_text("AdvSceneSwitcher.tempVar.window.windowText"),
+		obs_module_text(
+			"AdvSceneSwitcher.tempVar.window.windowText.description"));
 #endif
 }
 
@@ -349,7 +383,7 @@ void MacroConditionWindowEdit::CheckTitleChanged(int state)
 void MacroConditionWindowEdit::CheckTextChanged(int state)
 {
 	GUARD_LOADING_AND_LOCK();
-	_entryData->_checkText = state;
+	_entryData->SetCheckText(state);
 	SetWidgetVisibility();
 }
 
@@ -409,8 +443,8 @@ void MacroConditionWindowEdit::SetWidgetVisibility()
 			 _entryData->_focus || _entryData->_windowFocusChanged);
 	_windowSelection->setVisible(_entryData->_checkTitle);
 	_windowRegex->setVisible(_entryData->_checkTitle);
-	_textRegex->setVisible(_entryData->_checkText);
-	_text->setVisible(_entryData->_checkText);
+	_textRegex->setVisible(_entryData->GetCheckText());
+	_text->setVisible(_entryData->GetCheckText());
 	adjustSize();
 	updateGeometry();
 }
@@ -429,7 +463,7 @@ void MacroConditionWindowEdit::UpdateEntryData()
 	_maximized->setChecked(_entryData->_maximized);
 	_focused->setChecked(_entryData->_focus);
 	_windowFocusChanged->setChecked(_entryData->_windowFocusChanged);
-	_checkText->setChecked(_entryData->_checkText);
+	_checkText->setChecked(_entryData->GetCheckText());
 	_text->setPlainText(_entryData->_text);
 	_textRegex->SetRegexConfig(_entryData->_textRegex);
 	SetWidgetVisibility();

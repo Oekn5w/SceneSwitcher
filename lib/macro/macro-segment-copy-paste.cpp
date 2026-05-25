@@ -72,15 +72,24 @@ void MacroEdit::PasteMacroSegment()
 		}
 		AddMacroCondition(macro.get(), macro->Conditions().size(),
 				  copyInfo.segment->GetId(), data.Get(), logic);
+		if (!macro->Conditions().empty()) {
+			macro->Conditions().back()->FixupVarMappingRefs();
+		}
 		break;
 	}
 	case MacroSegmentCopyInfo::Type::ACTION:
 		AddMacroAction(macro.get(), macro->Actions().size(),
 			       copyInfo.segment->GetId(), data.Get());
+		if (!macro->Actions().empty()) {
+			macro->Actions().back()->FixupVarMappingRefs();
+		}
 		break;
 	case MacroSegmentCopyInfo::Type::ELSE:
 		AddMacroElseAction(macro.get(), macro->ElseActions().size(),
 				   copyInfo.segment->GetId(), data.Get());
+		if (!macro->ElseActions().empty()) {
+			macro->ElseActions().back()->FixupVarMappingRefs();
+		}
 		break;
 	default:
 		break;

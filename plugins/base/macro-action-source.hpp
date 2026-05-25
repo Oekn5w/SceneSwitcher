@@ -5,34 +5,32 @@
 #include "source-selection.hpp"
 #include "source-setting.hpp"
 
+#include <QCheckBox>
+#include <QComboBox>
 #include <QLabel>
 #include <QPushButton>
-#include <QComboBox>
 
 namespace advss {
 
 class MacroActionSource : public MacroAction {
 public:
 	MacroActionSource(Macro *m) : MacroAction(m) {}
-	bool PerformAction();
-	void LogAction() const;
-	bool Save(obs_data_t *obj) const;
-	bool Load(obs_data_t *obj);
-	std::string GetShortDesc() const;
-	std::string GetId() const { return id; };
+
 	static std::shared_ptr<MacroAction> Create(Macro *m);
 	std::shared_ptr<MacroAction> Copy() const;
-	void ResolveVariablesToFixedValues();
 
-	SourceSelection _source;
-	SourceSettingButton _button;
-	StringVariable _settingsString = "";
-	StringVariable _manualSettingValue = "";
-	obs_deinterlace_mode _deinterlaceMode = OBS_DEINTERLACE_MODE_DISABLE;
-	obs_deinterlace_field_order _deinterlaceOrder =
-		OBS_DEINTERLACE_FIELD_ORDER_TOP;
-	TempVariableRef _tempVar;
-	SourceSetting _setting;
+	bool PerformAction();
+	void LogAction() const;
+
+	bool Save(obs_data_t *obj) const;
+	bool Load(obs_data_t *obj);
+
+	std::string GetShortDesc() const;
+	std::string GetId() const { return id; };
+
+	void ResolveVariablesToFixedValues();
+	void SetupTempVars();
+	std::vector<TempVariableRef> GetTempVarRefs() const;
 
 	enum class Action {
 		ENABLE,
@@ -45,8 +43,26 @@ public:
 		OPEN_INTERACTION_DIALOG,
 		OPEN_FILTER_DIALOG,
 		OPEN_PROPERTIES_DIALOG,
+		CLOSE_INTERACTION_DIALOG,
+		CLOSE_FILTER_DIALOG,
+		CLOSE_PROPERTIES_DIALOG,
+		GET_SETTING,
+		GET_SETTINGS,
 	};
-	Action _action = Action::SETTINGS;
+
+	void SetAction(Action);
+	Action GetAction() const { return _action; }
+
+	SourceSelection _source;
+	SourceSettingButton _button;
+	StringVariable _settingsString = "";
+	StringVariable _manualSettingValue = "";
+	obs_deinterlace_mode _deinterlaceMode = OBS_DEINTERLACE_MODE_DISABLE;
+	obs_deinterlace_field_order _deinterlaceOrder =
+		OBS_DEINTERLACE_FIELD_ORDER_TOP;
+	TempVariableRef _tempVar;
+	SourceSetting _setting;
+	bool _acceptDialog = false;
 
 	enum class SettingsInputMethod {
 		INDIVIDUAL_MANUAL,
@@ -58,6 +74,8 @@ public:
 		SettingsInputMethod::INDIVIDUAL_MANUAL;
 
 private:
+	Action _action = Action::SETTINGS;
+
 	static bool _registered;
 	static const std::string id;
 };
@@ -91,9 +109,11 @@ private slots:
 	void SelectionChanged(const SourceSetting &);
 	void ManualSettingsValueChanged();
 	void RefreshVariableSourceSelectionValue();
+	void AcceptDialogChanged(int);
 
 signals:
 	void HeaderInfoChanged(const QString &);
+	void ShowVariableMappings(bool show);
 
 private:
 	void SetWidgetVisibility();
@@ -112,6 +132,7 @@ private:
 	QComboBox *_deinterlaceOrder;
 	QLabel *_warning;
 	QPushButton *_refreshSettingSelection;
+	QCheckBox *_acceptDialog;
 
 	std::shared_ptr<MacroActionSource> _entryData;
 	bool _loading = true;

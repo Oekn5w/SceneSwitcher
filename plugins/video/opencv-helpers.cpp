@@ -48,20 +48,18 @@ static void preprocessPatternMatchResult(cv::Mat &mat, bool invert)
 	}
 }
 
-void MatchPattern(QImage &img, const PatternImageData &patternData,
-		  double threshold, cv::Mat &result, double *pBestFitValue,
-		  bool useAlphaAsMask, cv::TemplateMatchModes matchMode)
+double MatchPattern(QImage &img, const PatternImageData &patternData,
+		    double threshold, cv::Mat &result, bool useAlphaAsMask,
+		    cv::TemplateMatchModes matchMode)
 {
+	double bestFitValue = std::numeric_limits<double>::signaling_NaN();
 	result = cv::Mat(0, 0, CV_32F);
-	if (pBestFitValue) {
-		*pBestFitValue = std::numeric_limits<double>::signaling_NaN();
-	}
 	if (img.isNull() || patternData.rgbaPattern.empty()) {
-		return;
+		return bestFitValue;
 	}
 	if (img.height() < patternData.rgbaPattern.rows ||
 	    img.width() < patternData.rgbaPattern.cols) {
-		return;
+		return bestFitValue;
 	}
 
 	auto input = QImageToMat(img);
@@ -94,20 +92,47 @@ void MatchPattern(QImage &img, const PatternImageData &patternData,
 	// -> Invert TM_SQDIFF_NORMED in the preprocess step
 	preprocessPatternMatchResult(result, matchMode == cv::TM_SQDIFF_NORMED);
 
-	if (pBestFitValue) {
-		cv::minMaxLoc(result, nullptr, pBestFitValue);
-	}
-
+	cv::minMaxLoc(result, nullptr, &bestFitValue);
 	cv::threshold(result, result, threshold, 0.0, cv::THRESH_TOZERO);
+	return bestFitValue;
 }
 
-void MatchPattern(QImage &img, QImage &pattern, double threshold,
-		  cv::Mat &result, double *pBestFitValue, bool useAlphaAsMask,
-		  cv::TemplateMatchModes matchColor)
+int CountPatternMatches(const cv::Mat &result, const cv::Size &patternSize)
+{
+	if (result.empty()) {
+		return 0;
+	}
+
+	cv::Mat work = result.clone();
+	int count = 0;
+
+	while (true) {
+		double maxVal;
+		cv::Point maxLoc;
+		cv::minMaxLoc(work, nullptr, &maxVal, nullptr, &maxLoc);
+		if (maxVal <= 0.0) {
+			break;
+		}
+		count++;
+		// Suppress the template-sized region around this match so
+		// overlapping high-scoring positions are not counted separately
+		int x = std::max(0, maxLoc.x - patternSize.width / 2);
+		int y = std::max(0, maxLoc.y - patternSize.height / 2);
+		int w = std::min(patternSize.width, work.cols - x);
+		int h = std::min(patternSize.height, work.rows - y);
+		work(cv::Rect(x, y, w, h)) = 0.0f;
+	}
+
+	return count;
+}
+
+double MatchPattern(QImage &img, QImage &pattern, double threshold,
+		    cv::Mat &result, bool useAlphaAsMask,
+		    cv::TemplateMatchModes matchColor)
 {
 	auto data = CreatePatternData(pattern);
-	MatchPattern(img, data, threshold, result, pBestFitValue,
-		     useAlphaAsMask, matchColor);
+	return MatchPattern(img, data, threshold, result, useAlphaAsMask,
+			    matchColor);
 }
 
 std::vector<cv::Rect> MatchObject(QImage &img, cv::CascadeClassifier &cascade,
@@ -206,10 +231,9 @@ std::optional<std::string> RunOCR(tesseract::TessBaseAPI *ocr,
 				  const QImage &image, const QColor &color,
 				  double colorDiff)
 {
-	(void)ocr;
 	(void)color;
 	(void)colorDiff;
-	if (image.isNull()) {
+	if (!ocr || image.isNull()) {
 		return {};
 	}
 
@@ -261,9 +285,9 @@ QColor GetAverageColor(const QImage &img)
 
 	auto image = QImageToMat(img);
 	cv::Scalar meanColor = cv::mean(image);
-	int averageBlue = cvRound(meanColor[0]);
+	int averageRed = cvRound(meanColor[0]);
 	int averageGreen = cvRound(meanColor[1]);
-	int averageRed = cvRound(meanColor[2]);
+	int averageBlue = cvRound(meanColor[2]);
 
 	return QColor(averageRed, averageGreen, averageBlue);
 }
@@ -284,8 +308,8 @@ QColor GetDominantColor(const QImage &img, int k)
 	cv::TermCriteria criteria(
 		cv::TermCriteria::EPS + cv::TermCriteria::MAX_ITER, 100, 0.2);
 	cv::Mat labels, centers;
-	cv::kmeans(reshapedImage, k, labels, criteria, 1,
-		   cv::KMEANS_RANDOM_CENTERS, centers);
+	cv::kmeans(reshapedImage, k, labels, criteria, 3, cv::KMEANS_PP_CENTERS,
+		   centers);
 
 	// Find the dominant color
 	// Center of the cluster with the largest number of pixels
@@ -296,16 +320,16 @@ QColor GetDominantColor(const QImage &img, int k)
 
 	cv::Point max_loc;
 	cv::minMaxLoc(counts, nullptr, nullptr, nullptr, &max_loc);
-	try {
-		cv::Scalar dominantColor = centers.at<cv::Scalar>(max_loc.y);
-		const int blue = cv::saturate_cast<int>(dominantColor.val[0]);
-		const int green = cv::saturate_cast<int>(dominantColor.val[1]);
-		const int red = cv::saturate_cast<int>(dominantColor.val[2]);
-		const int alpha = cv::saturate_cast<int>(dominantColor.val[3]);
-		return QColor(red, green, blue, alpha);
-	} catch (...) {
-	}
-	return QColor();
+	const int clusterIdx = max_loc.x;
+	const int red =
+		cv::saturate_cast<int>(centers.at<float>(clusterIdx, 0));
+	const int green =
+		cv::saturate_cast<int>(centers.at<float>(clusterIdx, 1));
+	const int blue =
+		cv::saturate_cast<int>(centers.at<float>(clusterIdx, 2));
+	const int alpha =
+		cv::saturate_cast<int>(centers.at<float>(clusterIdx, 3));
+	return QColor(red, green, blue, alpha);
 }
 
 // Assumption is that QImage uses Format_RGBA8888.

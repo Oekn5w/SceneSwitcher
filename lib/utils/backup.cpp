@@ -8,13 +8,18 @@
 
 #include <obs-frontend-api.h>
 #include <obs-module.h>
-#include <QFileDialog>
-#include <QTextStream>
 #include <util/config-file.h>
+
+#include <QFileDialog>
+#include <QMainWindow>
+#include <QTextStream>
+#include <QTimer>
+
+#include <thread>
 
 namespace advss {
 
-void AskForBackup(const QString &json)
+static void showBackupDialogs(const QString &json)
 {
 	const bool backupWasConfirmed = DisplayMessage(
 		obs_module_text("AdvSceneSwitcher.askBackup"), true, false);
@@ -40,6 +45,27 @@ void AskForBackup(const QString &json)
 	}
 	auto out = QTextStream(&file);
 	out << json;
+}
+
+void AskForBackup(obs_data_t *settings)
+{
+	// This function is called while the plugin settings are being loaded.
+	// Blocking at this stage can cause issues such as OBS failing to start
+	// or crashing.
+	// Therefore, we ask the user whether they want to back up the settings
+	// asynchronously.
+
+	auto json = obs_data_get_json(settings);
+	static QString jsonQString = json ? json : "";
+
+	static const auto askForBackupWrapper = [](void *) {
+		showBackupDialogs(jsonQString);
+	};
+
+	AddFinishedLoadingStep([]() {
+		obs_queue_task(OBS_TASK_UI, askForBackupWrapper, nullptr,
+			       false);
+	});
 }
 
 void BackupSettingsOfCurrentVersion()

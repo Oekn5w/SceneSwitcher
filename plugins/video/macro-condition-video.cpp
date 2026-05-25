@@ -118,11 +118,31 @@ MacroConditionVideo::MacroConditionVideo(Macro *m)
 {
 }
 
+void MacroConditionVideo::UpdateActiveKeeper()
+{
+	_activeKeeper.SetActive(_keepActive);
+	if (_video.type == VideoInput::Type::OBS_MAIN_OUTPUT) {
+		return;
+	}
+	if (!_keepActive) {
+		_lastActiveKeeperSource = nullptr;
+		return;
+	}
+	auto videoSource = _video.GetVideo();
+	if (videoSource == _lastActiveKeeperSource) {
+		return;
+	}
+	_lastActiveKeeperSource = videoSource;
+	_activeKeeper.SetSource(OBSGetStrongRef(videoSource));
+}
+
 bool MacroConditionVideo::CheckCondition()
 {
 	if (!_video.ValidSelection()) {
 		return false;
 	}
+
+	UpdateActiveKeeper();
 
 	bool match = false;
 	if (CheckShouldBeSkipped()) {
@@ -159,6 +179,7 @@ bool MacroConditionVideo::Save(obs_data_t *obj) const
 {
 	MacroCondition::Save(obj);
 	_video.Save(obj);
+	obs_data_set_bool(obj, "keepActive", _keepActive);
 	obs_data_set_int(obj, "condition", static_cast<int>(_condition));
 	obs_data_set_string(obj, "filePath", _file.c_str());
 	obs_data_set_bool(obj, "blockUntilScreenshotDone",
@@ -178,6 +199,7 @@ bool MacroConditionVideo::Load(obs_data_t *obj)
 {
 	MacroCondition::Load(obj);
 	_video.Load(obj);
+	_keepActive = obs_data_get_bool(obj, "keepActive");
 	SetCondition(static_cast<VideoCondition>(
 		obs_data_get_int(obj, "condition")));
 	_file = obs_data_get_string(obj, "filePath");
@@ -273,17 +295,56 @@ void MacroConditionVideo::SetCondition(VideoCondition condition)
 bool MacroConditionVideo::ScreenshotContainsPattern()
 {
 	cv::Mat result;
-	MatchPattern(_screenshotData.GetImage(), _patternImageData,
-		     _patternMatchParameters.threshold, result, nullptr,
-		     _patternMatchParameters.useAlphaAsMask,
-		     _patternMatchParameters.matchMode);
+	double bestMatchValue =
+		MatchPattern(_screenshotData.GetImage(), _patternImageData,
+			     _patternMatchParameters.threshold, result,
+			     _patternMatchParameters.useAlphaAsMask,
+			     _patternMatchParameters.matchMode);
+
 	if (result.total() == 0) {
+		SetTempVarValue("similarity", std::to_string(bestMatchValue));
 		SetTempVarValue("patternCount", "0");
+		SetTempVarValue("matchX", "-1");
+		SetTempVarValue("matchY", "-1");
+		SetTempVarValue("matchWidth", "0");
+		SetTempVarValue("matchHeight", "0");
 		return false;
 	}
-	const auto count = countNonZero(result);
-	SetTempVarValue("patternCount", std::to_string(count));
-	return count > 0;
+
+	SetTempVarValue("similarity", std::to_string(bestMatchValue));
+	SetTempVarValue("matchWidth",
+			std::to_string(_patternImageData.rgbaPattern.cols));
+	SetTempVarValue("matchHeight",
+			std::to_string(_patternImageData.rgbaPattern.rows));
+
+	if (IsTempVarInUse("matchX") || IsTempVarInUse("matchY")) {
+		double maxVal;
+		cv::Point maxLoc;
+		cv::minMaxLoc(result, nullptr, &maxVal, nullptr, &maxLoc);
+		if (maxVal > 0.0) {
+			int matchX = maxLoc.x;
+			int matchY = maxLoc.y;
+			if (_areaParameters.enable) {
+				matchX += _areaParameters.area.x;
+				matchY += _areaParameters.area.y;
+			}
+			SetTempVarValue("matchX", std::to_string(matchX));
+			SetTempVarValue("matchY", std::to_string(matchY));
+		} else {
+			SetTempVarValue("matchX", "-1");
+			SetTempVarValue("matchY", "-1");
+		}
+	}
+
+	if (IsTempVarInUse("patternCount")) {
+		const auto count = CountPatternMatches(
+			result, {_patternImageData.rgbaPattern.cols,
+				 _patternImageData.rgbaPattern.rows});
+		SetTempVarValue("patternCount", std::to_string(count));
+		return count > 0;
+	}
+
+	return countNonZero(result) > 0;
 }
 
 bool MacroConditionVideo::FileInputIsUpToDate() const
@@ -304,10 +365,12 @@ bool MacroConditionVideo::OutputChanged()
 
 	cv::Mat result;
 	_patternImageData = CreatePatternData(_matchImage);
-	MatchPattern(_screenshotData.GetImage(), _patternImageData,
-		     _patternMatchParameters.threshold, result, nullptr,
-		     _patternMatchParameters.useAlphaAsMask,
-		     _patternMatchParameters.matchMode);
+	double bestMatchValue =
+		MatchPattern(_screenshotData.GetImage(), _patternImageData,
+			     _patternMatchParameters.threshold, result,
+			     _patternMatchParameters.useAlphaAsMask,
+			     _patternMatchParameters.matchMode);
+	SetTempVarValue("similarity", std::to_string(bestMatchValue));
 	if (result.total() == 0) {
 		return false;
 	}
@@ -364,13 +427,19 @@ bool MacroConditionVideo::CheckColor()
 		_screenshotData.GetImage(), _colorParameters.color,
 		_colorParameters.colorThreshold,
 		_colorParameters.matchThreshold);
-	// Way too slow for now
-	//SetTempVarValue("dominantColor", GetDominantColor(_screenshotData.image, 3)
-	//				 .name(QColor::HexArgb)
-	//				 .toStdString());
-	SetTempVarValue("color", GetAverageColor(_screenshotData.GetImage())
-					 .name(QColor::HexArgb)
-					 .toStdString());
+
+	SetTempVarValue("color", [&]() {
+		return GetAverageColor(_screenshotData.GetImage())
+			.name(QColor::HexArgb)
+			.toStdString();
+	});
+
+	SetTempVarValue("dominantColor", [&]() {
+		return GetDominantColor(_screenshotData.GetImage(), 3)
+			.name(QColor::HexArgb)
+			.toStdString();
+	});
+
 	return ret;
 }
 
@@ -411,13 +480,55 @@ void MacroConditionVideo::SetupTempVars()
 {
 	MacroCondition::SetupTempVars();
 	switch (_condition) {
+	case VideoCondition::HAS_CHANGED:
+	case VideoCondition::HAS_NOT_CHANGED:
+		if (!_patternMatchParameters.useForChangedCheck) {
+			break;
+		}
+		AddTempvar(
+			"similarity",
+			obs_module_text(
+				"AdvSceneSwitcher.tempVar.video.similarity"),
+			obs_module_text(
+				"AdvSceneSwitcher.tempVar.video.similarity.description"));
+		break;
 	case VideoCondition::PATTERN:
+		AddTempvar(
+			"similarity",
+			obs_module_text(
+				"AdvSceneSwitcher.tempVar.video.similarity"),
+			obs_module_text(
+				"AdvSceneSwitcher.tempVar.video.similarity.description"));
 		AddTempvar(
 			"patternCount",
 			obs_module_text(
 				"AdvSceneSwitcher.tempVar.video.patternCount"),
 			obs_module_text(
 				"AdvSceneSwitcher.tempVar.video.patternCount.description"));
+		AddTempvar(
+			"matchX",
+			obs_module_text(
+				"AdvSceneSwitcher.tempVar.video.matchX"),
+			obs_module_text(
+				"AdvSceneSwitcher.tempVar.video.matchX.description"));
+		AddTempvar(
+			"matchY",
+			obs_module_text(
+				"AdvSceneSwitcher.tempVar.video.matchY"),
+			obs_module_text(
+				"AdvSceneSwitcher.tempVar.video.matchY.description"));
+		AddTempvar(
+			"matchWidth",
+			obs_module_text(
+				"AdvSceneSwitcher.tempVar.video.matchWidth"),
+			obs_module_text(
+				"AdvSceneSwitcher.tempVar.video.matchWidth.description"));
+		AddTempvar(
+			"matchHeight",
+			obs_module_text(
+				"AdvSceneSwitcher.tempVar.video.matchHeight"),
+			obs_module_text(
+				"AdvSceneSwitcher.tempVar.video.matchHeight.description"));
 		break;
 	case VideoCondition::OBJECT:
 		AddTempvar(
@@ -448,11 +559,15 @@ void MacroConditionVideo::SetupTempVars()
 			obs_module_text("AdvSceneSwitcher.tempVar.video.color"),
 			obs_module_text(
 				"AdvSceneSwitcher.tempVar.video.color.description"));
+		AddTempvar(
+			"dominantColor",
+			obs_module_text(
+				"AdvSceneSwitcher.tempVar.video.dominantColor"),
+			obs_module_text(
+				"AdvSceneSwitcher.tempVar.video.dominantColor.description"));
 		break;
 	case VideoCondition::MATCH:
 	case VideoCondition::DIFFER:
-	case VideoCondition::HAS_NOT_CHANGED:
-	case VideoCondition::HAS_CHANGED:
 	case VideoCondition::NO_IMAGE:
 	default:
 		break;
@@ -1192,7 +1307,12 @@ MacroConditionVideoEdit::MacroConditionVideoEdit(
 	  _area(new AreaEdit(this, &_previewDialog, entryData)),
 	  _throttleControlLayout(new QHBoxLayout),
 	  _throttleEnable(new QCheckBox()),
-	  _throttleCount(new QSpinBox())
+	  _throttleCount(new QSpinBox()),
+	  _keepActive(new QCheckBox(
+		  obs_module_text("AdvSceneSwitcher.keepSourceActive"))),
+	  _keepActiveHelp(new HelpIcon(
+		  obs_module_text("AdvSceneSwitcher.keepSourceActive.help"),
+		  this))
 {
 	_reduceLatency->setToolTip(obs_module_text(
 		"AdvSceneSwitcher.condition.video.reduceLatency.tooltip"));
@@ -1249,6 +1369,8 @@ MacroConditionVideoEdit::MacroConditionVideoEdit(
 			 SLOT(ThrottleEnableChanged(int)));
 	QWidget::connect(_throttleCount, SIGNAL(valueChanged(int)), this,
 			 SLOT(ThrottleCountChanged(int)));
+	QWidget::connect(_keepActive, SIGNAL(stateChanged(int)), this,
+			 SLOT(KeepActiveChanged(int)));
 	QWidget::connect(_showMatch, SIGNAL(clicked()), this,
 			 SLOT(ShowMatchClicked()));
 	QWidget::connect(this,
@@ -1293,6 +1415,11 @@ MacroConditionVideoEdit::MacroConditionVideoEdit(
 			"AdvSceneSwitcher.condition.video.layout.throttle"),
 		_throttleControlLayout, widgetPlaceholders);
 
+	QHBoxLayout *keepActiveLayout = new QHBoxLayout;
+	keepActiveLayout->addWidget(_keepActive);
+	keepActiveLayout->addWidget(_keepActiveHelp);
+	keepActiveLayout->addStretch();
+
 	QHBoxLayout *showMatchLayout = new QHBoxLayout;
 	showMatchLayout->addWidget(_showMatch);
 	showMatchLayout->addStretch();
@@ -1308,6 +1435,7 @@ MacroConditionVideoEdit::MacroConditionVideoEdit(
 	mainLayout->addWidget(_color);
 	mainLayout->addLayout(_throttleControlLayout);
 	mainLayout->addWidget(_area);
+	mainLayout->addLayout(keepActiveLayout);
 	mainLayout->addWidget(_reduceLatency);
 	mainLayout->addLayout(showMatchLayout);
 	setLayout(mainLayout);
@@ -1477,6 +1605,7 @@ void MacroConditionVideoEdit::UsePatternForChangedCheckChanged(int value)
 {
 	GUARD_LOADING_AND_LOCK();
 	_entryData->_patternMatchParameters.useForChangedCheck = value;
+	_entryData->SetupTempVars();
 	SetWidgetVisibility();
 }
 
@@ -1525,6 +1654,12 @@ void MacroConditionVideoEdit::ThrottleCountChanged(int value)
 {
 	GUARD_LOADING_AND_LOCK();
 	_entryData->_throttleCount = value / GetIntervalValue();
+}
+
+void MacroConditionVideoEdit::KeepActiveChanged(int value)
+{
+	GUARD_LOADING_AND_LOCK();
+	_entryData->_keepActive = value;
 }
 
 void MacroConditionVideoEdit::ShowMatchClicked()
@@ -1592,6 +1727,11 @@ void MacroConditionVideoEdit::SetWidgetVisibility()
 			 needsThrottleControls(_entryData->GetCondition()));
 	_area->setVisible(needsAreaControls(_entryData->GetCondition()));
 
+	const bool sourceOrScene = _entryData->_video.type !=
+				   VideoInput::Type::OBS_MAIN_OUTPUT;
+	_keepActive->setVisible(sourceOrScene);
+	_keepActiveHelp->setVisible(sourceOrScene);
+
 	if (_entryData->GetCondition() == VideoCondition::HAS_CHANGED ||
 	    _entryData->GetCondition() == VideoCondition::HAS_NOT_CHANGED) {
 		_patternThreshold->setVisible(
@@ -1658,6 +1798,7 @@ void MacroConditionVideoEdit::UpdateEntryData()
 	_throttleEnable->setChecked(_entryData->_throttleEnabled);
 	_throttleCount->setValue(_entryData->_throttleCount *
 				 GetIntervalValue());
+	_keepActive->setChecked(_entryData->_keepActive);
 	UpdatePreviewTooltip();
 	SetupPreviewDialogParams();
 	SetWidgetVisibility();

@@ -12,19 +12,15 @@ std::deque<std::shared_ptr<Item>> &GetActionQueues()
 	return queues;
 }
 
-void RegisterActionQueueTab();
-
-void SetupActionQueues()
+static bool setup()
 {
-	static bool done = false;
-	if (done) {
-		return;
-	}
 	AddSaveStep(SaveActionQueues);
 	AddLoadStep(LoadActionQueues);
-	RegisterActionQueueTab();
-	done = true;
+	AddPluginCleanupStep([]() { queues.clear(); });
+	return true;
 }
+
+static bool setupDone = setup();
 
 ActionQueue::ActionQueue() : Item()
 {
@@ -423,7 +419,7 @@ void ImportQueues(obs_data_t *data)
 		importedQueues->emplace_back(queue);
 	}
 
-	QeueUITask(signalImportedQueues, importedQueues);
+	QueueUITask(signalImportedQueues, importedQueues);
 }
 
 std::weak_ptr<ActionQueue> GetWeakActionQueueByName(const std::string &name)

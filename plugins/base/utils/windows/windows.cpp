@@ -138,7 +138,7 @@ static const std::unordered_map<HotkeyType, long> keyTable = {
 	{HotkeyType::Key_NumpadEnter, VK_RETURN},
 };
 
-void PressKeys(const std::vector<HotkeyType> keys, int duration)
+void PressKeys(const std::vector<HotkeyType> &keys, int duration)
 {
 	const int repeatInterval = 100;
 
@@ -203,26 +203,6 @@ static std::vector<HWND> getHWNDfromTitle(const std::string &title)
 		hPrevWnd = hwnd;
 	}
 	return hwnds;
-}
-
-std::string GetWindowClassByWindowTitle(const std::string &window)
-{
-	auto hwnds = getHWNDfromTitle(window);
-	if (hwnds.empty()) {
-		return "";
-	}
-	auto hwnd = hwnds.at(0);
-	std::wstring wClass;
-	wClass.resize(1024);
-	if (!GetClassNameW(hwnd, &wClass[0], wClass.capacity())) {
-		return "";
-	}
-
-	size_t len = os_wcs_to_utf8(wClass.c_str(), 0, nullptr, 0);
-	std::string className;
-	className.resize(len);
-	os_wcs_to_utf8(wClass.c_str(), 0, &className[0], len + 1);
-	return className;
 }
 
 void SetFocusWindow(const std::string &title)

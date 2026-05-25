@@ -32,6 +32,9 @@
 #endif
 #include <fstream>
 #include <sstream>
+#include <climits>
+#include <dirent.h>
+#include <unistd.h>
 #include "kwin-helpers.h"
 
 namespace advss {
@@ -233,28 +236,65 @@ std::string getWindowName(Window window)
 	return windowTitle;
 }
 
-void GetWindowList(std::vector<std::string> &windows)
+std::vector<WindowInfo> GetWindows(const WindowQueryOptions &options)
 {
-	windows.resize(0);
-	for (auto window : getTopLevelWindows()) {
-		auto name = getWindowName(window);
-		if (name.empty()) {
-			continue;
-		}
-		windows.emplace_back(name);
-	}
-}
+	const std::string foregroundTitle = GetCurrentWindowTitle();
+	const auto topLevel = getTopLevelWindows();
+	auto display = disp();
 
-void GetWindowList(QStringList &windows)
-{
-	windows.clear();
-	for (auto window : getTopLevelWindows()) {
+	std::vector<WindowInfo> result;
+	result.reserve(topLevel.size());
+
+	for (auto window : topLevel) {
 		auto name = getWindowName(window);
 		if (name.empty()) {
 			continue;
 		}
-		windows << QString::fromStdString(name);
+
+		WindowInfo info;
+		info.title = name;
+
+		if (options.focus) {
+			info.focused = (name == foregroundTitle);
+		}
+
+		if (options.fullscreen || options.maximized) {
+			QStringList states = getStates(window);
+			if (options.fullscreen) {
+				info.fullscreen = states.contains(
+					"_NET_WM_STATE_FULLSCREEN");
+			}
+			if (options.maximized) {
+				info.maximized =
+					states.contains(
+						"_NET_WM_STATE_MAXIMIZED_VERT") &&
+					states.contains(
+						"_NET_WM_STATE_MAXIMIZED_HORZ");
+			}
+		}
+
+		if (options.geometry && display) {
+			XWindowAttributes attrs;
+			if (XGetWindowAttributes(display, window, &attrs)) {
+				int x = 0;
+				int y = 0;
+				Window child;
+				XTranslateCoordinates(
+					display, window,
+					DefaultRootWindow(display), 0, 0, &x,
+					&y, &child);
+				info.x = x;
+				info.y = y;
+				info.width = attrs.width;
+				info.height = attrs.height;
+			}
+		}
+
+		// windowClass and text not implemented on Linux
+		result.emplace_back(std::move(info));
 	}
+
+	return result;
 }
 
 int getActiveWindow(Window *&window)
@@ -278,91 +318,24 @@ int getActiveWindow(Window *&window)
 				  &bytes, (uint8_t **)&window);
 }
 
-void GetCurrentWindowTitle(std::string &title)
+std::string GetCurrentWindowTitle()
 {
 	if (KWin) {
-		title = FocusNotifier::getActiveWindowTitle();
-		return;
+		return FocusNotifier::getActiveWindowTitle();
 	}
 
 	Window *data = 0;
 	if (getActiveWindow(data) != Success || !data) {
-		return;
+		return {};
 	}
 	if (!data[0]) {
 		XFree(data);
-		return;
+		return {};
 	}
 
 	auto name = getWindowName(data[0]);
 	XFree(data);
-
-	if (name.empty()) {
-		return;
-	}
-	title = name;
-}
-
-bool windowStatesAreSet(const std::string &windowTitle,
-			std::vector<QString> &expectedStates)
-{
-	if (!ewmhIsSupported()) {
-		return false;
-	}
-
-	std::vector<Window> windows = getTopLevelWindows();
-	for (auto &window : windows) {
-		auto name = getWindowName(window);
-		if (name.empty()) {
-			continue;
-		}
-
-		bool equals = windowTitle == name;
-		bool matches = QString::fromStdString(name).contains(
-			QRegularExpression(
-				QString::fromStdString(windowTitle)));
-
-		if (!(equals || matches)) {
-			continue;
-		}
-
-		QStringList states = getStates(window);
-		if (states.isEmpty()) {
-			if (expectedStates.empty()) {
-				return true;
-			}
-			return false;
-		}
-
-		for (const auto &state : expectedStates) {
-			if (!states.contains(state)) {
-				return false;
-			}
-		}
-		return true;
-	}
-	return false;
-}
-
-bool IsMaximized(const std::string &title)
-{
-	std::vector<QString> states;
-	states.emplace_back("_NET_WM_STATE_MAXIMIZED_VERT");
-	states.emplace_back("_NET_WM_STATE_MAXIMIZED_HORZ");
-	return windowStatesAreSet(title, states);
-}
-
-bool IsFullscreen(const std::string &title)
-{
-	std::vector<QString> states;
-	states.emplace_back("_NET_WM_STATE_FULLSCREEN");
-	return windowStatesAreSet(title, states);
-}
-
-std::optional<std::string> GetTextInWindow(const std::string &)
-{
-	// Not implemented
-	return {};
+	return name;
 }
 
 static void getProcessListProcps(QStringList &processes)
@@ -409,16 +382,17 @@ static void getProcessListProcps2(QStringList &processes)
 #endif
 }
 
-void GetProcessList(QStringList &processes)
+QStringList GetProcessList()
 {
-	processes.clear();
+	QStringList processes;
 	if (libprocpsSupported) {
 		getProcessListProcps(processes);
-		return;
+		return processes;
 	}
 	if (libprocps2Supported) {
 		getProcessListProcps2(processes);
 	}
+	return processes;
 }
 
 long getForegroundProcessPid()
@@ -469,24 +443,83 @@ std::string getProcNameFromPid(long pid)
 	return name;
 }
 
-void GetForegroundProcessName(QString &proc)
+std::string GetForegroundProcessName()
 {
-	std::string temp;
-	GetForegroundProcessName(temp);
-	proc = QString::fromStdString(temp);
+	auto pid = getForegroundProcessPid();
+	return getProcNameFromPid(pid);
 }
 
-void GetForegroundProcessName(std::string &proc)
+static std::string getProcessPathFromPid(long pid)
 {
-	proc.resize(0);
+	std::string linkPath = "/proc/" + std::to_string(pid) + "/exe";
+	char buf[PATH_MAX];
+	ssize_t len = readlink(linkPath.c_str(), buf, sizeof(buf) - 1);
+	if (len <= 0) {
+		return {};
+	}
+	buf[len] = '\0';
+	return buf;
+}
+
+std::string GetForegroundProcessPath()
+{
 	auto pid = getForegroundProcessPid();
-	proc = getProcNameFromPid(pid);
+	if (pid <= 0) {
+		return {};
+	}
+	return getProcessPathFromPid(pid);
+}
+
+QStringList GetProcessPathsFromName(const QString &name)
+{
+	QStringList paths;
+	const std::string nameStr = name.toStdString();
+	DIR *procDir = opendir("/proc");
+	if (!procDir) {
+		return paths;
+	}
+
+	struct dirent *entry;
+	while ((entry = readdir(procDir)) != nullptr) {
+		bool isPid = (entry->d_name[0] != '\0');
+		for (const char *c = entry->d_name; *c; c++) {
+			if (!isdigit(*c)) {
+				isPid = false;
+				break;
+			}
+		}
+		if (!isPid) {
+			continue;
+		}
+
+		std::string pid = entry->d_name;
+		std::string commPath = "/proc/" + pid + "/comm";
+		std::ifstream commFile(commPath);
+		if (!commFile) {
+			continue;
+		}
+		std::string comm;
+		std::getline(commFile, comm);
+		if (comm != nameStr) {
+			continue;
+		}
+
+		std::string path = getProcessPathFromPid(std::stol(pid));
+		if (path.empty()) {
+			continue;
+		}
+		QString qPath = QString::fromStdString(path);
+		if (!paths.contains(qPath)) {
+			paths.append(qPath);
+		}
+	}
+	closedir(procDir);
+	return paths;
 }
 
 bool IsInFocus(const QString &executable)
 {
-	std::string current;
-	GetForegroundProcessName(current);
+	const auto current = GetForegroundProcessName();
 
 	// True if executable switch equals current window
 	bool equals = (executable.toStdString() == current);

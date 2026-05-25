@@ -70,7 +70,7 @@ struct URLInfo {
 	std::string path;
 };
 
-static URLInfo getURLInfo(const std::string &input)
+static URLInfo getURLInfo(const std::string &input, bool keepParams)
 {
 	if (input.empty()) {
 		return {};
@@ -84,13 +84,27 @@ static URLInfo getURLInfo(const std::string &input)
 	const QUrl url(urlInput);
 	auto host =
 		url.scheme().toStdString() + "://" + url.host().toStdString();
-	int port = url.port();
+
+	const int port = url.port();
 	if (port != -1) {
 		host += ":" + std::to_string(port);
 	}
+
 	auto path = url.path().toStdString();
 	if (path.empty()) {
 		path = "/";
+	}
+
+	const auto query = url.query().toStdString();
+	if (!query.empty()) {
+		if (keepParams) {
+			path += "?" + query;
+		} else {
+			blog(LOG_WARNING,
+			     "ignoring query parameters \"%s\" in URL field. "
+			     "Using parameter field values instead.",
+			     query.c_str());
+		}
 	}
 
 	return {host, path};
@@ -98,48 +112,56 @@ static URLInfo getURLInfo(const std::string &input)
 
 bool MacroActionHttp::PerformAction()
 {
-	const auto [host, path] = getURLInfo(_url);
-
+	// Capture all config while holding the segment lock
+	const auto [host, path] = getURLInfo(_url, !_setParams);
 	httplib::Client cli(host);
 	setTimeout(cli, _timeout);
 	const auto params = _setParams ? getParams(_params) : httplib::Params();
 	const auto headers = _setHeaders ? getHeaders(_headers)
 					 : httplib::Headers();
+	const auto method = _method;
+	const std::string body = _body;
+	const std::string contentType = _contentType;
 
+	// Release the segment lock for the blocking network call
 	httplib::Result response;
-	switch (_method) {
-	case MacroActionHttp::Method::GET:
-		response = cli.Get(path, params, headers);
-		break;
-	case MacroActionHttp::Method::POST: {
-		const auto pathWithParam =
-			httplib::append_query_params(path, params);
-		response =
-			cli.Post(pathWithParam, headers, _body, _contentType);
-		break;
-	}
-	case MacroActionHttp::Method::PUT: {
-		const auto pathWithParam =
-			httplib::append_query_params(path, params);
-		response = cli.Put(pathWithParam, headers, _body, _contentType);
-		break;
-	}
-	case MacroActionHttp::Method::PATCH: {
-		const auto pathWithParam =
-			httplib::append_query_params(path, params);
-		response =
-			cli.Patch(pathWithParam, headers, _body, _contentType);
-		break;
-	}
-	case MacroActionHttp::Method::DELETE: {
-		const auto pathWithParam =
-			httplib::append_query_params(path, params);
-		response =
-			cli.Delete(pathWithParam, headers, _body, _contentType);
-		break;
-	}
-	default:
-		break;
+	{
+		SuspendLock suspendLock(*this);
+		switch (method) {
+		case MacroActionHttp::Method::GET:
+			response = cli.Get(path, params, headers);
+			break;
+		case MacroActionHttp::Method::POST: {
+			const auto pathWithParam =
+				httplib::append_query_params(path, params);
+			response = cli.Post(pathWithParam, headers, body,
+					    contentType);
+			break;
+		}
+		case MacroActionHttp::Method::PUT: {
+			const auto pathWithParam =
+				httplib::append_query_params(path, params);
+			response = cli.Put(pathWithParam, headers, body,
+					   contentType);
+			break;
+		}
+		case MacroActionHttp::Method::PATCH: {
+			const auto pathWithParam =
+				httplib::append_query_params(path, params);
+			response = cli.Patch(pathWithParam, headers, body,
+					     contentType);
+			break;
+		}
+		case MacroActionHttp::Method::DELETE: {
+			const auto pathWithParam =
+				httplib::append_query_params(path, params);
+			response = cli.Delete(pathWithParam, headers, body,
+					      contentType);
+			break;
+		}
+		default:
+			break;
+		}
 	}
 
 	if (VerboseLoggingEnabled() && !response) {
@@ -471,10 +493,10 @@ void MacroActionHttpEdit::SetWidgetLayout()
 
 	auto layout = new QVBoxLayout;
 	layout->addLayout(actionLayout);
-	layout->addWidget(_setHeaders);
-	layout->addLayout(_headerListLayout);
 	layout->addWidget(_setParams);
 	layout->addLayout(_paramListLayout);
+	layout->addWidget(_setHeaders);
+	layout->addLayout(_headerListLayout);
 	layout->addLayout(_contentTypeLayout);
 	layout->addLayout(_bodyLayout);
 	layout->addLayout(timeoutLayout);

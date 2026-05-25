@@ -7,9 +7,20 @@
 
 #include <obs-frontend-api.h>
 
+#include <QMainWindow>
+
 namespace advss {
 
 const std::string MacroActionSource::id = "source";
+
+std::vector<TempVariableRef> MacroActionSource::GetTempVarRefs() const
+{
+	auto refs = MacroSegment::GetTempVarRefs();
+	if (_tempVar.HasValidID()) {
+		refs.push_back(_tempVar);
+	}
+	return refs;
+}
 
 bool MacroActionSource::_registered = MacroActionFactory::Register(
 	MacroActionSource::id,
@@ -37,6 +48,16 @@ const static std::map<MacroActionSource::Action, std::string> actionTypes = {
 	 "AdvSceneSwitcher.action.source.type.openFilterDialog"},
 	{MacroActionSource::Action::OPEN_PROPERTIES_DIALOG,
 	 "AdvSceneSwitcher.action.source.type.openPropertiesDialog"},
+	{MacroActionSource::Action::CLOSE_INTERACTION_DIALOG,
+	 "AdvSceneSwitcher.action.source.type.closeInteractionDialog"},
+	{MacroActionSource::Action::CLOSE_FILTER_DIALOG,
+	 "AdvSceneSwitcher.action.source.type.closeFilterDialog"},
+	{MacroActionSource::Action::CLOSE_PROPERTIES_DIALOG,
+	 "AdvSceneSwitcher.action.source.type.closePropertiesDialog"},
+	{MacroActionSource::Action::GET_SETTING,
+	 "AdvSceneSwitcher.action.source.type.getSetting"},
+	{MacroActionSource::Action::GET_SETTINGS,
+	 "AdvSceneSwitcher.action.source.type.getSettings"},
 };
 
 const static std::map<obs_deinterlace_mode, std::string> deinterlaceModes = {
@@ -108,9 +129,81 @@ static bool isInteractable(obs_source_t *source)
 	return (flags & OBS_SOURCE_INTERACTION) != 0;
 }
 
+static void closeSourceDialog(obs_source_t *source, bool accept,
+			      const char *className)
+{
+	if (!source) {
+		return;
+	}
+
+	auto mainWindow =
+		reinterpret_cast<QMainWindow *>(obs_frontend_get_main_window());
+	if (!mainWindow) {
+		return;
+	}
+
+	for (const auto widget : mainWindow->children()) {
+		auto dialog = qobject_cast<QDialog *>(widget);
+		if (!dialog) {
+			continue;
+		}
+
+		if (dialog->metaObject()->className() != QString(className)) {
+			continue;
+		}
+
+		const char *name = obs_source_get_name(source);
+		if (!name) {
+			continue;
+		}
+
+		if (!dialog->windowTitle().contains(QString(name))) {
+			continue;
+		}
+
+		if (accept) {
+			dialog->accept();
+			return;
+		}
+
+		// dialog->reject() will ask for confirmation
+		// Try to avoid this by finding and pressing the cancel button
+		for (const auto widget : dialog->children()) {
+			auto buttons = qobject_cast<QDialogButtonBox *>(widget);
+			if (!buttons) {
+				continue;
+			}
+
+			for (auto *button : buttons->buttons()) {
+				if (buttons->buttonRole(button) ==
+				    QDialogButtonBox::RejectRole) {
+					button->click();
+					break;
+				}
+			}
+		}
+	}
+}
+
+template<typename F> void QueueUITaskLambda(F &&func)
+{
+	using FnType = std::decay_t<F>;
+	auto *heapFunc = new FnType(std::forward<F>(func));
+
+	QueueUITask(
+		[](void *param) {
+			std::unique_ptr<FnType> fn(
+				static_cast<FnType *>(param));
+			(*fn)();
+		},
+		heapFunc);
+}
+
 bool MacroActionSource::PerformAction()
 {
-	auto s = obs_weak_source_get_source(_source.GetSource());
+	OBSSource s = obs_weak_source_get_source(_source.GetSource());
+	obs_source_release(s);
+
 	switch (_action) {
 	case Action::ENABLE:
 		obs_source_set_enabled(s, true);
@@ -172,10 +265,47 @@ bool MacroActionSource::PerformAction()
 	case Action::OPEN_PROPERTIES_DIALOG:
 		obs_frontend_open_source_properties(s);
 		break;
+	case Action::CLOSE_INTERACTION_DIALOG:
+		if (!isInteractable(s)) {
+			// Nothing to do
+			break;
+		}
+
+		QueueUITaskLambda([&]() {
+			closeSourceDialog(s, true, "OBSBasicInteraction");
+		});
+		break;
+	case Action::CLOSE_FILTER_DIALOG:
+		QueueUITaskLambda([&]() {
+			closeSourceDialog(s, _acceptDialog, "OBSBasicFilters");
+		});
+		break;
+	case Action::CLOSE_PROPERTIES_DIALOG:
+		QueueUITaskLambda([&]() {
+			closeSourceDialog(s, _acceptDialog,
+					  "OBSBasicProperties");
+		});
+		break;
+	case Action::GET_SETTING: {
+		const auto value =
+			GetSourceSettingValue(_source.GetSource(), _setting);
+		if (value) {
+			SetTempVarValue("setting", *value);
+		}
+		break;
+	}
+	case Action::GET_SETTINGS: {
+		const auto settings =
+			GetSourceSettings(_source.GetSource(), true);
+		if (settings) {
+			SetTempVarValue("settings", *settings);
+		}
+		break;
+	}
 	default:
 		break;
 	}
-	obs_source_release(s);
+
 	return true;
 }
 
@@ -207,6 +337,7 @@ bool MacroActionSource::Save(obs_data_t *obj) const
 			 static_cast<int>(_deinterlaceMode));
 	obs_data_set_int(obj, "deinterlaceOrder",
 			 static_cast<int>(_deinterlaceOrder));
+	obs_data_set_bool(obj, "acceptDialog", _acceptDialog);
 	return true;
 }
 
@@ -231,6 +362,7 @@ bool MacroActionSource::Load(obs_data_t *obj)
 		obs_data_get_int(obj, "deinterlaceMode"));
 	_deinterlaceOrder = static_cast<obs_deinterlace_field_order>(
 		obs_data_get_int(obj, "deinterlaceOrder"));
+	_acceptDialog = obs_data_get_bool(obj, "acceptDialog");
 	return true;
 }
 
@@ -255,6 +387,31 @@ void MacroActionSource::ResolveVariablesToFixedValues()
 	_source.ResolveVariables();
 	_settingsString.ResolveVariables();
 	_manualSettingValue.ResolveVariables();
+}
+
+void MacroActionSource::SetupTempVars()
+{
+	MacroAction::SetupTempVars();
+	switch (_action) {
+	case Action::GET_SETTING:
+		AddTempvar("setting",
+			   obs_module_text(
+				   "AdvSceneSwitcher.tempVar.source.setting"));
+		break;
+	case Action::GET_SETTINGS:
+		AddTempvar("settings",
+			   obs_module_text(
+				   "AdvSceneSwitcher.tempVar.source.settings"));
+		break;
+	default:
+		break;
+	}
+}
+
+void MacroActionSource::SetAction(Action action)
+{
+	_action = action;
+	SetupTempVars();
 }
 
 static inline void populateActionSelection(QComboBox *list)
@@ -307,7 +464,9 @@ MacroActionSourceEdit::MacroActionSourceEdit(
 	  _warning(new QLabel(
 		  obs_module_text("AdvSceneSwitcher.action.source.warning"))),
 	  _refreshSettingSelection(new QPushButton(
-		  obs_module_text("AdvSceneSwitcher.action.source.refresh")))
+		  obs_module_text("AdvSceneSwitcher.action.source.refresh"))),
+	  _acceptDialog(new QCheckBox(obs_module_text(
+		  "AdvSceneSwitcher.action.source.dialog.accept")))
 {
 	populateActionSelection(_actions);
 
@@ -347,6 +506,8 @@ MacroActionSourceEdit::MacroActionSourceEdit(
 			 SLOT(SelectionChanged(const SourceSetting &)));
 	QWidget::connect(_refreshSettingSelection, SIGNAL(clicked()), this,
 			 SLOT(RefreshVariableSourceSelectionValue()));
+	QWidget::connect(_acceptDialog, SIGNAL(stateChanged(int)), this,
+			 SLOT(AcceptDialogChanged(int)));
 
 	auto entryLayout = new QHBoxLayout;
 	entryLayout->setContentsMargins(0, 0, 0, 0);
@@ -374,6 +535,7 @@ MacroActionSourceEdit::MacroActionSourceEdit(
 	mainLayout->addLayout(_settingsLayout);
 	mainLayout->addWidget(_warning);
 	mainLayout->addWidget(_settingsString);
+	mainLayout->addWidget(_acceptDialog);
 	auto buttonLayout = new QHBoxLayout;
 	buttonLayout->setContentsMargins(0, 0, 0, 0);
 	buttonLayout->addWidget(_getSettings);
@@ -394,7 +556,7 @@ void MacroActionSourceEdit::UpdateEntryData()
 
 	const auto weakSource = _entryData->_source.GetSource();
 	_settingsButtons->SetSelection(weakSource, _entryData->_button);
-	_actions->setCurrentIndex(static_cast<int>(_entryData->_action));
+	_actions->setCurrentIndex(static_cast<int>(_entryData->GetAction()));
 	_sources->SetSource(_entryData->_source);
 	_sourceSettings->SetSelection(weakSource, _entryData->_setting);
 	_settingsString->setPlainText(_entryData->_settingsString);
@@ -406,6 +568,7 @@ void MacroActionSourceEdit::UpdateEntryData()
 		static_cast<int>(_entryData->_settingsInputMethod)));
 	_tempVars->SetVariable(_entryData->_tempVar);
 	_manualSettingValue->setPlainText(_entryData->_manualSettingValue);
+	_acceptDialog->setChecked(_entryData->_acceptDialog);
 
 	SetWidgetVisibility();
 }
@@ -428,7 +591,7 @@ void MacroActionSourceEdit::SourceChanged(const SourceSelection &source)
 void MacroActionSourceEdit::ActionChanged(int value)
 {
 	GUARD_LOADING_AND_LOCK();
-	_entryData->_action = static_cast<MacroActionSource::Action>(value);
+	_entryData->SetAction(static_cast<MacroActionSource::Action>(value));
 	SetWidgetVisibility();
 }
 
@@ -498,6 +661,7 @@ void MacroActionSourceEdit::SelectionChanged(const TempVariableRef &var)
 {
 	GUARD_LOADING_AND_LOCK();
 	_entryData->_tempVar = var;
+	IncrementTempVarInUseGeneration();
 }
 
 void MacroActionSourceEdit::SettingsInputMethodChanged(int idx)
@@ -531,6 +695,12 @@ void MacroActionSourceEdit::RefreshVariableSourceSelectionValue()
 	_sourceSettings->SetSource(_entryData->_source.GetSource());
 }
 
+void MacroActionSourceEdit::AcceptDialogChanged(int state)
+{
+	GUARD_LOADING_AND_LOCK();
+	_entryData->_acceptDialog = state;
+}
+
 static QString GetIndividualListEntryName()
 {
 	static const auto matchesInput =
@@ -549,19 +719,29 @@ static QString GetIndividualListEntryName()
 
 void MacroActionSourceEdit::SetWidgetVisibility()
 {
+	const auto action = _entryData->GetAction();
+
+	const bool isSetSettings = action ==
+				   MacroActionSource::Action::SETTINGS;
+	const bool isGetSetting = action ==
+				  MacroActionSource::Action::GET_SETTING;
+	const bool isGetSettings = action ==
+				   MacroActionSource::Action::GET_SETTINGS;
+
 	SetLayoutVisible(_settingsLayout,
-			 _entryData->_action ==
-				 MacroActionSource::Action::SETTINGS);
+			 isSetSettings || isGetSetting || isGetSettings);
+	_settingsInputMethods->setVisible(isSetSettings);
 	_sourceSettings->setVisible(
-		_entryData->_action == MacroActionSource::Action::SETTINGS &&
-		_entryData->_settingsInputMethod !=
-			MacroActionSource::SettingsInputMethod::JSON_STRING);
+		(isSetSettings &&
+		 _entryData->_settingsInputMethod !=
+			 MacroActionSource::SettingsInputMethod::JSON_STRING) ||
+		isGetSetting);
 	_settingsString->setVisible(
-		_entryData->_action == MacroActionSource::Action::SETTINGS &&
+		isSetSettings &&
 		_entryData->_settingsInputMethod ==
 			MacroActionSource::SettingsInputMethod::JSON_STRING);
 	_getSettings->setVisible(
-		_entryData->_action == MacroActionSource::Action::SETTINGS &&
+		isSetSettings &&
 		_entryData->_settingsInputMethod !=
 			MacroActionSource::SettingsInputMethod::
 				INDIVIDUAL_TEMPVAR);
@@ -570,13 +750,12 @@ void MacroActionSourceEdit::SetWidgetVisibility()
 			     GetIndividualListEntryName(),
 			     _entryData->_setting.IsList());
 
-	_tempVars->setVisible(_entryData->_action ==
-				      MacroActionSource::Action::SETTINGS &&
+	_tempVars->setVisible(isSetSettings &&
 			      _entryData->_settingsInputMethod ==
 				      MacroActionSource::SettingsInputMethod::
 					      INDIVIDUAL_TEMPVAR);
 
-	if (_entryData->_action == MacroActionSource::Action::SETTINGS &&
+	if (isSetSettings &&
 	    (_entryData->_settingsInputMethod ==
 		     MacroActionSource::SettingsInputMethod::INDIVIDUAL_MANUAL ||
 	     _entryData->_settingsInputMethod ==
@@ -589,29 +768,33 @@ void MacroActionSourceEdit::SetWidgetVisibility()
 		_manualSettingValue->hide();
 	}
 
-	const bool showWarning =
-		_entryData->_action == MacroActionSource::Action::ENABLE ||
-		_entryData->_action == MacroActionSource::Action::DISABLE;
+	const bool showWarning = action == MacroActionSource::Action::ENABLE ||
+				 action == MacroActionSource::Action::DISABLE;
 	_warning->setVisible(showWarning);
 	_settingsButtons->setVisible(
-		_entryData->_action ==
-		MacroActionSource::Action::SETTINGS_BUTTON);
+		action == MacroActionSource::Action::SETTINGS_BUTTON);
 	_deinterlaceMode->setVisible(
-		_entryData->_action ==
-		MacroActionSource::Action::DEINTERLACE_MODE);
+		action == MacroActionSource::Action::DEINTERLACE_MODE);
 	_deinterlaceOrder->setVisible(
-		_entryData->_action ==
-		MacroActionSource::Action::DEINTERLACE_FIELD_ORDER);
+		action == MacroActionSource::Action::DEINTERLACE_FIELD_ORDER);
 
 	_refreshSettingSelection->setVisible(
-		(_entryData->_settingsInputMethod ==
-			 MacroActionSource::SettingsInputMethod::
-				 INDIVIDUAL_MANUAL ||
-		 _entryData->_settingsInputMethod ==
-			 MacroActionSource::SettingsInputMethod::
-				 INDIVIDUAL_LIST_ENTRY) &&
+		((isSetSettings &&
+		  (_entryData->_settingsInputMethod ==
+			   MacroActionSource::SettingsInputMethod::
+				   INDIVIDUAL_MANUAL ||
+		   _entryData->_settingsInputMethod ==
+			   MacroActionSource::SettingsInputMethod::
+				   INDIVIDUAL_LIST_ENTRY)) ||
+		 isGetSetting) &&
 		_entryData->_source.GetType() ==
 			SourceSelection::Type::VARIABLE);
+
+	_acceptDialog->setVisible(
+		action == MacroActionSource::Action::CLOSE_FILTER_DIALOG ||
+		action == MacroActionSource::Action::CLOSE_PROPERTIES_DIALOG);
+
+	emit ShowVariableMappings(isGetSetting || isGetSettings);
 
 	adjustSize();
 	updateGeometry();

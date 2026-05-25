@@ -8,6 +8,8 @@ namespace advss {
 void SavePluginSettings(obs_data_t *);
 EXPORT void LoadPluginSettings(obs_data_t *);
 
+void AddEarlySaveStep(std::function<void(obs_data_t *)>);
+void AddEarlyLoadStep(std::function<void(obs_data_t *)>);
 EXPORT void AddSaveStep(std::function<void(obs_data_t *)>);
 EXPORT void AddLoadStep(std::function<void(obs_data_t *)>);
 EXPORT void AddPostLoadStep(std::function<void()>);
@@ -33,6 +35,9 @@ EXPORT void AddStopStep(std::function<void()>);
 void RunStartSteps();
 void RunStopSteps();
 void RunIntervalResetSteps();
+
+// Steps are executed after OBS_FRONTEND_EVENT_FINISHED_LOADING is fired
+EXPORT void AddFinishedLoadingStep(std::function<void()>);
 
 enum class NoMatchBehavior { NO_SWITCH = 0, SWITCH = 1, RANDOM_SWITCH = 2 };
 EXPORT void SetPluginNoMatchBehavior(NoMatchBehavior);

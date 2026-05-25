@@ -1,5 +1,6 @@
 #pragma once
 #include "macro-condition-edit.hpp"
+#include "day-of-week-selector.hpp"
 #include "duration-control.hpp"
 
 #include <QCheckBox>
@@ -30,17 +31,6 @@ public:
 	QDateTime GetDateTime2() const;
 	QDateTime GetNextMatchDateTime() const;
 
-	enum class Day {
-		ANY = 0,
-		MONDAY,
-		TUESDAY,
-		WEDNESDAY,
-		THURSDAY,
-		FRIDAY,
-		SATURDAY,
-		SUNDAY,
-	};
-
 	enum class Condition {
 		AT,
 		AFTER,
@@ -49,7 +39,11 @@ public:
 		PATTERN,
 	};
 
-	Day _dayOfWeek = Day::ANY;
+	QSet<DayOfWeekSelector::Day> _days = {
+		DayOfWeekSelector::Day::Monday,
+		DayOfWeekSelector::Day::Tuesday,
+		DayOfWeekSelector::Day::Wednesday,
+	};
 	bool _ignoreDate = false;
 	bool _ignoreTime = false;
 	bool _repeat = false;
@@ -94,7 +88,7 @@ public:
 	}
 
 private slots:
-	void DayOfWeekChanged(int day);
+	void DaysChanged(const QSet<DayOfWeekSelector::Day> &);
 	void ConditionChanged(int cond);
 	void DateChanged(const QDate &date);
 	void TimeChanged(const QTime &time);
@@ -113,8 +107,18 @@ signals:
 	void HeaderInfoChanged(const QString &);
 
 protected:
+	void showEvent(QShowEvent *event) override;
+
+private:
+	void SetupSimpleView();
+	void SetupAdvancedView();
+	void SetupPatternView();
+	void SetWidgetStatus();
+	void ShowFirstDateSelection(bool visible);
+	void ShowSecondDateSelection(bool visible);
+
 	QComboBox *_weekCondition;
-	QComboBox *_dayOfWeek;
+	DayOfWeekSelector *_days;
 	QCheckBox *_ignoreWeekTime;
 	QTimeEdit *_weekTime;
 
@@ -134,22 +138,15 @@ protected:
 	QLabel *_currentDate;
 
 	QPushButton *_advancedSettingsTooggle;
-	QHBoxLayout *_simpleLayout;
+	QVBoxLayout *_simpleLayout;
 	QHBoxLayout *_advancedLayout;
 	QVBoxLayout *_repeatLayout;
 	QHBoxLayout *_repeatUpdateLayout;
 	QHBoxLayout *_patternLayout;
 
-	std::shared_ptr<MacroConditionDate> _entryData;
-
-private:
-	void SetupSimpleView();
-	void SetupAdvancedView();
-	void SetupPatternView();
-	void SetWidgetStatus();
-	void ShowFirstDateSelection(bool visible);
-	void ShowSecondDateSelection(bool visible);
 	QTimer _timer;
+
+	std::shared_ptr<MacroConditionDate> _entryData;
 	bool _loading = true;
 };
 

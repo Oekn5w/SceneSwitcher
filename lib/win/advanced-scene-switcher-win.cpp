@@ -1,10 +1,12 @@
 #include "platform-funcs.hpp"
+#include "plugin-state-helpers.hpp"
 
 #include <windows.h>
 #include <UIAutomation.h>
 #include <util/platform.h>
 #include <TlHelp32.h>
 #include <Psapi.h>
+#include <memory>
 #include <locale>
 #include <codecvt>
 #include <string>
@@ -15,6 +17,9 @@
 #include <QApplication>
 #include <QWidget>
 #include <mutex>
+
+#define ADVSS_WIDEN_(x) L##x
+#define ADVSS_WIDEN(x) ADVSS_WIDEN_(x)
 
 namespace advss {
 
@@ -133,9 +138,9 @@ const std::vector<std::string> getOBSWindows()
 	return lastDoneHelper->windows;
 }
 
-void GetWindowList(std::vector<std::string> &windows)
+static std::vector<std::string> getAllWindowTitles()
 {
-	windows.resize(0);
+	std::vector<std::string> windows;
 	EnumWindowsWithMetro(GetTitleCB, reinterpret_cast<LPARAM>(&windows));
 
 	// Also add OBS windows
@@ -147,20 +152,133 @@ void GetWindowList(std::vector<std::string> &windows)
 
 	// Add entry for OBS Studio itself - see GetCurrentWindowTitle()
 	windows.emplace_back("OBS");
+	return windows;
 }
 
-void GetWindowList(QStringList &windows)
+static bool isWindowMaximized(HWND hwnd)
 {
-	windows.clear();
-
-	std::vector<std::string> w;
-	GetWindowList(w);
-	for (auto window : w) {
-		windows << QString::fromStdString(window);
+	if (!hwnd || hwnd == GetDesktopWindow() || hwnd == GetShellWindow()) {
+		return false;
 	}
+	if (IsZoomed(hwnd)) {
+		return true;
+	}
+	RECT appBounds;
+	MONITORINFO monitorInfo = {0};
+	monitorInfo.cbSize = sizeof(MONITORINFO);
+	GetMonitorInfo(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
+		       &monitorInfo);
+	GetWindowRect(hwnd, &appBounds);
+	return monitorInfo.rcMonitor.bottom == appBounds.bottom &&
+	       monitorInfo.rcMonitor.top == appBounds.top &&
+	       monitorInfo.rcMonitor.left == appBounds.left &&
+	       monitorInfo.rcMonitor.right == appBounds.right;
 }
 
-void GetCurrentWindowTitle(std::string &title)
+static bool isWindowFullscreen(HWND hwnd)
+{
+	if (!hwnd || hwnd == GetDesktopWindow() || hwnd == GetShellWindow()) {
+		return false;
+	}
+	RECT appBounds;
+	MONITORINFO monitorInfo = {0};
+	monitorInfo.cbSize = sizeof(MONITORINFO);
+	GetMonitorInfo(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
+		       &monitorInfo);
+	GetWindowRect(hwnd, &appBounds);
+	return monitorInfo.rcMonitor.bottom == appBounds.bottom &&
+	       monitorInfo.rcMonitor.top == appBounds.top &&
+	       monitorInfo.rcMonitor.left == appBounds.left &&
+	       monitorInfo.rcMonitor.right == appBounds.right;
+}
+
+static std::string getWindowClass(HWND hwnd)
+{
+	std::wstring wClass;
+	wClass.resize(256);
+	int len = GetClassNameW(hwnd, &wClass[0], (int)wClass.size());
+	if (len <= 0) {
+		return "";
+	}
+	wClass.resize(len);
+	size_t utf8len = os_wcs_to_utf8(wClass.c_str(), 0, nullptr, 0);
+	std::string result;
+	result.resize(utf8len);
+	os_wcs_to_utf8(wClass.c_str(), 0, &result[0], utf8len + 1);
+	return result;
+}
+
+static HWND getHWNDfromTitle(const std::string &title);
+static std::optional<std::string> GetTextInWindow(const std::string &window);
+
+std::vector<WindowInfo> GetWindows(const WindowQueryOptions &options)
+{
+	const std::string foregroundTitle = GetCurrentWindowTitle();
+	const auto titles = getAllWindowTitles();
+
+	std::vector<WindowInfo> result;
+	result.reserve(titles.size());
+
+	for (const auto &title : titles) {
+		WindowInfo info;
+		info.title = title;
+
+		const bool needHwnd = options.geometry || options.fullscreen ||
+				      options.maximized ||
+				      options.windowClass || options.text ||
+				      options.focus;
+
+		if (options.focus) {
+			info.focused = (title == foregroundTitle);
+		}
+
+		if (!needHwnd || (!options.geometry && !options.fullscreen &&
+				  !options.maximized && !options.windowClass &&
+				  !options.text)) {
+			result.emplace_back(std::move(info));
+			continue;
+		}
+
+		HWND hwnd = getHWNDfromTitle(title);
+		if (!hwnd) {
+			result.emplace_back(std::move(info));
+			continue;
+		}
+
+		if (options.geometry || options.fullscreen ||
+		    options.maximized) {
+			RECT rect;
+			if (GetWindowRect(hwnd, &rect)) {
+				info.x = rect.left;
+				info.y = rect.top;
+				info.width = rect.right - rect.left;
+				info.height = rect.bottom - rect.top;
+			}
+		}
+
+		if (options.maximized) {
+			info.maximized = isWindowMaximized(hwnd);
+		}
+
+		if (options.fullscreen) {
+			info.fullscreen = isWindowFullscreen(hwnd);
+		}
+
+		if (options.windowClass) {
+			info.windowClass = getWindowClass(hwnd);
+		}
+
+		if (options.text) {
+			info.text = GetTextInWindow(title);
+		}
+
+		result.emplace_back(std::move(info));
+	}
+
+	return result;
+}
+
+std::string GetCurrentWindowTitle()
 {
 	HWND window = GetForegroundWindow();
 	DWORD pid;
@@ -178,15 +296,15 @@ void GetCurrentWindowTitle(std::string &title)
 	//
 	// So instead rely on Qt to get the title of the active window.
 	if (GetCurrentProcessId() == pid) {
-		auto window = QApplication::activeWindow();
-		if (window) {
-			title = window->windowTitle().toStdString();
-		} else {
-			title = "OBS";
+		auto obsWindow = QApplication::activeWindow();
+		if (obsWindow) {
+			return obsWindow->windowTitle().toStdString();
 		}
-		return;
+		return "OBS";
 	}
+	std::string title;
 	GetWindowTitle(window, title);
+	return title;
 }
 
 static HWND getHWNDfromTitle(const std::string &title)
@@ -196,36 +314,6 @@ static HWND getHWNDfromTitle(const std::string &title)
 	os_utf8_to_wcs(title.c_str(), 0, wTitle, 512);
 	hwnd = FindWindowEx(NULL, NULL, NULL, wTitle);
 	return hwnd;
-}
-
-bool IsMaximized(const std::string &title)
-{
-	RECT appBounds;
-	MONITORINFO monitorInfo = {0};
-	HWND hwnd = NULL;
-
-	hwnd = getHWNDfromTitle(title);
-	if (!hwnd) {
-		return false;
-	}
-
-	monitorInfo.cbSize = sizeof(MONITORINFO);
-	GetMonitorInfo(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
-		       &monitorInfo);
-
-	if (hwnd && hwnd != GetDesktopWindow() && hwnd != GetShellWindow()) {
-		if (IsZoomed(hwnd)) {
-			return true;
-		}
-		GetWindowRect(hwnd, &appBounds);
-		if (monitorInfo.rcMonitor.bottom == appBounds.bottom &&
-		    monitorInfo.rcMonitor.top == appBounds.top &&
-		    monitorInfo.rcMonitor.left == appBounds.left &&
-		    monitorInfo.rcMonitor.right == appBounds.right) {
-			return true;
-		}
-	}
-	return false;
 }
 
 static std::wstring GetControlText(HWND hwnd, IUIAutomationElement *element)
@@ -254,10 +342,18 @@ static std::wstring GetControlText(HWND hwnd, IUIAutomationElement *element)
 	return text;
 }
 
-std::optional<std::string> GetTextInWindow(const std::string &window)
+static std::optional<std::string> GetTextInWindow(const std::string &window)
 {
 	HWND hwnd = getHWNDfromTitle(window);
 	if (!hwnd) {
+		return {};
+	}
+
+	DWORD pid = 0;
+	DWORD thid = 0;
+	thid = GetWindowThreadProcessId(hwnd, &pid);
+	// Calling CoCreateInstance() on the OBS windows might cause a deadlock
+	if (GetCurrentProcessId() == pid) {
 		return {};
 	}
 
@@ -313,51 +409,22 @@ std::optional<std::string> GetTextInWindow(const std::string &window)
 	return tmp;
 }
 
-bool IsFullscreen(const std::string &title)
+QStringList GetProcessList()
 {
-	RECT appBounds;
-	MONITORINFO monitorInfo = {0};
-
-	HWND hwnd = NULL;
-	hwnd = getHWNDfromTitle(title);
-
-	if (!hwnd) {
-		return false;
-	}
-
-	monitorInfo.cbSize = sizeof(MONITORINFO);
-	GetMonitorInfo(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
-		       &monitorInfo);
-
-	if (hwnd && hwnd != GetDesktopWindow() && hwnd != GetShellWindow()) {
-		GetWindowRect(hwnd, &appBounds);
-		if (monitorInfo.rcMonitor.bottom == appBounds.bottom &&
-		    monitorInfo.rcMonitor.top == appBounds.top &&
-		    monitorInfo.rcMonitor.left == appBounds.left &&
-		    monitorInfo.rcMonitor.right == appBounds.right) {
-			return true;
-		}
-	}
-
-	return false;
-}
-
-void GetProcessList(QStringList &processes)
-{
-
+	QStringList processes;
 	HANDLE procSnapshot;
 	PROCESSENTRY32 procEntry;
 
 	procSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
 	if (procSnapshot == INVALID_HANDLE_VALUE) {
-		return;
+		return processes;
 	}
 
 	procEntry.dwSize = sizeof(PROCESSENTRY32);
 
 	if (!Process32First(procSnapshot, &procEntry)) {
 		CloseHandle(procSnapshot);
-		return;
+		return processes;
 	}
 
 	do {
@@ -375,9 +442,10 @@ void GetProcessList(QStringList &processes)
 	} while (Process32Next(procSnapshot, &procEntry));
 
 	CloseHandle(procSnapshot);
+	return processes;
 }
 
-static void GetForegroundProcessName(QString &proc)
+static QString getForegroundProcessNameStr()
 {
 	// only checks if the current foreground window is from the same executable,
 	// may return true for any window from a program
@@ -388,31 +456,90 @@ static void GetForegroundProcessName(QString &proc)
 	HANDLE process = OpenProcess(
 		PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, processId);
 	if (process == NULL) {
-		return;
+		return {};
 	}
 
 	WCHAR executablePath[600];
 	GetModuleFileNameEx(process, 0, executablePath, 600);
 	CloseHandle(process);
 
-	proc = QString::fromWCharArray(executablePath)
-		       .split(QRegularExpression("(/|\\\\)"))
-		       .back();
+	return QString::fromWCharArray(executablePath)
+		.split(QRegularExpression("(/|\\\\)"))
+		.back();
 }
 
-void GetForegroundProcessName(std::string &proc)
+std::string GetForegroundProcessName()
 {
-	QString temp;
-	GetForegroundProcessName(temp);
-	proc = temp.toStdString();
+	return getForegroundProcessNameStr().toStdString();
+}
+
+std::string GetForegroundProcessPath()
+{
+	HWND foregroundWindow = GetForegroundWindow();
+	DWORD processId = 0;
+	GetWindowThreadProcessId(foregroundWindow, &processId);
+
+	HANDLE process = OpenProcess(
+		PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, processId);
+	if (process == NULL) {
+		return {};
+	}
+
+	WCHAR executablePath[600];
+	GetModuleFileNameEx(process, 0, executablePath, 600);
+	CloseHandle(process);
+
+	return QString::fromWCharArray(executablePath).toStdString();
+}
+
+QStringList GetProcessPathsFromName(const QString &name)
+{
+	QStringList paths;
+	HANDLE procSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+	if (procSnapshot == INVALID_HANDLE_VALUE) {
+		return paths;
+	}
+
+	PROCESSENTRY32 procEntry;
+	procEntry.dwSize = sizeof(PROCESSENTRY32);
+
+	if (!Process32First(procSnapshot, &procEntry)) {
+		CloseHandle(procSnapshot);
+		return paths;
+	}
+
+	do {
+		QString exeName = QString::fromWCharArray(procEntry.szExeFile);
+		if (exeName != name) {
+			continue;
+		}
+
+		HANDLE process =
+			OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
+				    FALSE, procEntry.th32ProcessID);
+		if (process == NULL) {
+			continue;
+		}
+
+		WCHAR executablePath[600];
+		if (GetModuleFileNameEx(process, 0, executablePath, 600)) {
+			QString path = QString::fromWCharArray(executablePath);
+			if (!paths.contains(path)) {
+				paths.append(path);
+			}
+		}
+		CloseHandle(process);
+	} while (Process32Next(procSnapshot, &procEntry));
+
+	CloseHandle(procSnapshot);
+	return paths;
 }
 
 bool IsInFocus(const QString &executable)
 {
 	// only checks if the current foreground window is from the same executable,
 	// may return true for any window from a program
-	QString foregroundProc;
-	GetForegroundProcessName(foregroundProc);
+	const auto foregroundProc = getForegroundProcessNameStr();
 
 	// True if executable switch equals current window
 	bool equals = (executable == foregroundProc);
@@ -442,9 +569,86 @@ int SecondsSinceLastInput()
 	return (getTime() - getLastInputTime()) / 1000;
 }
 
+static void addPluginFolderToSymbolPath()
+{
+	// This runs after OBS_FRONTEND_EVENT_FINISHED_LOADING, which fires after
+	// obs_load_all_modules() completes. By that point OBS has already called
+	// reset_win32_symbol_paths() -> SymInitializeW(), so DbgHelp is
+	// initialized and we can append our plugins subfolder (where the PDB
+	// files live) to the existing search path.
+	HMODULE dbghelp = LoadLibraryW(L"DbgHelp");
+	if (!dbghelp) {
+		return;
+	}
+
+	typedef BOOL(WINAPI * SymGetSearchPathW_t)(HANDLE, PWSTR, DWORD);
+	typedef BOOL(WINAPI * SymSetSearchPathW_t)(HANDLE, PCWSTR);
+	typedef BOOL(WINAPI * SymRefreshModuleList_t)(HANDLE);
+
+	auto symGetSearchPathW = reinterpret_cast<SymGetSearchPathW_t>(
+		GetProcAddress(dbghelp, "SymGetSearchPathW"));
+	auto symSetSearchPathW = reinterpret_cast<SymSetSearchPathW_t>(
+		GetProcAddress(dbghelp, "SymSetSearchPathW"));
+	auto symRefreshModuleList = reinterpret_cast<SymRefreshModuleList_t>(
+		GetProcAddress(dbghelp, "SymRefreshModuleList"));
+
+	if (!symGetSearchPathW || !symSetSearchPathW || !symRefreshModuleList) {
+		FreeLibrary(dbghelp);
+		return;
+	}
+
+	HMODULE hModule = NULL;
+	if (!GetModuleHandleExW(
+		    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+			    GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+		    reinterpret_cast<LPCWSTR>(addPluginFolderToSymbolPath),
+		    &hModule)) {
+		FreeLibrary(dbghelp);
+		return;
+	}
+
+	wchar_t dllDir[MAX_PATH];
+	if (!GetModuleFileNameW(hModule, dllDir, MAX_PATH)) {
+		FreeLibrary(dbghelp);
+		return;
+	}
+
+	wchar_t *lastSep = wcsrchr(dllDir, L'\\');
+	if (!lastSep) {
+		FreeLibrary(dbghelp);
+		return;
+	}
+	*lastSep = L'\0';
+
+	wchar_t pluginsPath[MAX_PATH];
+	wcsncpy_s(pluginsPath, MAX_PATH, dllDir, _TRUNCATE);
+	wcsncat_s(pluginsPath, MAX_PATH, L"\\" ADVSS_WIDEN(ADVSS_PLUGIN_FOLDER),
+		  _TRUNCATE);
+
+	constexpr DWORD currentPathLen = 4096;
+	constexpr DWORD newPathLen = 8192;
+	auto currentPath = std::make_unique<wchar_t[]>(currentPathLen);
+	auto newPath = std::make_unique<wchar_t[]>(newPathLen);
+
+	symGetSearchPathW(GetCurrentProcess(), currentPath.get(),
+			  currentPathLen);
+
+	if (currentPath[0] != L'\0') {
+		_snwprintf_s(newPath.get(), newPathLen, _TRUNCATE, L"%s;%s",
+			     currentPath.get(), pluginsPath);
+	} else {
+		wcsncpy_s(newPath.get(), newPathLen, pluginsPath, _TRUNCATE);
+	}
+
+	symSetSearchPathW(GetCurrentProcess(), newPath.get());
+	symRefreshModuleList(GetCurrentProcess());
+	FreeLibrary(dbghelp);
+}
+
 void PlatformInit()
 {
 	CoInitialize(NULL);
+	AddFinishedLoadingStep(addPluginFolderToSymbolPath);
 }
 
 void PlatformCleanup()

@@ -6,6 +6,7 @@
 #include "resizing-text-edit.hpp"
 #include "scene-selection.hpp"
 #include "single-char-selection.hpp"
+#include "string-list.hpp"
 #include "variable-line-edit.hpp"
 #include "variable-text-edit.hpp"
 #include "variable-spinbox.hpp"
@@ -22,6 +23,7 @@ public:
 	bool PostLoad();
 	std::string GetShortDesc() const;
 	std::string GetId() const { return id; };
+	std::vector<TempVariableRef> GetTempVarRefs() const;
 	static std::shared_ptr<MacroAction> Create(Macro *m);
 	std::shared_ptr<MacroAction> Copy() const;
 	void SetSegmentIndexValue(int);
@@ -55,6 +57,8 @@ public:
 		RANDOM_NUMBER,
 		QUERY_JSON,
 		ARRAY_JSON,
+		COPY_VAR,
+		RANDOM_LIST_VALUE,
 	};
 
 	Action _action = Action::SET_VALUE;
@@ -106,6 +110,10 @@ public:
 	DoubleVariable _randomNumberEnd = 100;
 	bool _generateInteger = true;
 
+	StringList _randomValues = {"value1", "value2", "value3"};
+	bool _allowRepeatValues = true;
+	std::optional<std::string> _lastRandomValue;
+
 	StringVariable _jsonQuery = "$.some.nested.value";
 	IntVariable _jsonIndex = 0;
 
@@ -118,6 +126,7 @@ private:
 	void HandleCaseChange(Variable *);
 	void SetToSceneItemName(Variable *);
 	void GenerateRandomNumber(Variable *);
+	void PickRandomValue(Variable *);
 
 	std::weak_ptr<MacroSegment> _macroSegment;
 	int _segmentIdxLoadValue = -1;
@@ -174,6 +183,8 @@ private slots:
 	void RandomNumberStartChanged(const NumberVariable<double> &);
 	void RandomNumberEndChanged(const NumberVariable<double> &);
 	void GenerateIntegerChanged(int);
+	void RandomValueListChanged(const StringList &);
+	void AllowRepeatValuesChanged(int);
 	void JsonQueryChanged();
 	void JsonIndexChanged(const NumberVariable<int> &);
 
@@ -193,11 +204,10 @@ private:
 	QLabel *_segmentValueStatus;
 	ResizingPlainTextEdit *_segmentValue;
 	QVBoxLayout *_substringLayout;
-	QHBoxLayout *_subStringIndexEntryLayout;
-	QHBoxLayout *_subStringRegexEntryLayout;
+	QHBoxLayout *_subStringControlsLayout;
 	VariableSpinBox *_subStringStart;
 	VariableSpinBox *_subStringSize;
-	RegexConfigWidget *_substringRegex;
+	RegexConfigWidget *_subStringRegex;
 	ResizingPlainTextEdit *_regexPattern;
 	VariableSpinBox *_regexMatchIdx;
 	QHBoxLayout *_findReplaceLayout;
@@ -224,7 +234,10 @@ private:
 	VariableDoubleSpinBox *_randomNumberStart;
 	VariableDoubleSpinBox *_randomNumberEnd;
 	QCheckBox *_generateInteger;
-	QVBoxLayout *_randomLayout;
+	QVBoxLayout *_randomNumberLayout;
+	StringListEdit *_randomValues;
+	QCheckBox *_allowRepeatValues;
+	QVBoxLayout *_randomValueLayout;
 	VariableLineEdit *_jsonQuery;
 	QLabel *_jsonQueryHelp;
 	VariableSpinBox *_jsonIndex;

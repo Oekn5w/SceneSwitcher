@@ -134,6 +134,9 @@ target_sources(
           lib/macro/macro-dock-window.hpp
           lib/macro/macro-edit.cpp
           lib/macro/macro-edit.hpp
+          lib/macro/macro-export-builtin-extensions.cpp
+          lib/macro/macro-export-extensions.cpp
+          lib/macro/macro-export-extensions.hpp
           lib/macro/macro-export-import-dialog.cpp
           lib/macro/macro-export-import-dialog.hpp
           lib/macro/macro-helpers.cpp
@@ -146,6 +149,8 @@ target_sources(
           lib/macro/macro-ref.hpp
           lib/macro/macro-run-button.cpp
           lib/macro/macro-run-button.hpp
+          lib/macro/macro-search.cpp
+          lib/macro/macro-search.hpp
           lib/macro/macro-segment-copy-paste.cpp
           lib/macro/macro-segment-copy-paste.hpp
           lib/macro/macro-segment-list.cpp
@@ -164,6 +169,7 @@ target_sources(
           lib/macro/macro-tab.cpp
           lib/macro/macro-tree.cpp
           lib/macro/macro-tree.hpp
+          lib/macro/macro-websocket-trigger.cpp
           lib/macro/macro.cpp
           lib/macro/macro.hpp)
 
@@ -182,6 +188,8 @@ target_sources(
           lib/utils/canvas-helpers.hpp
           lib/utils/condition-logic.cpp
           lib/utils/condition-logic.hpp
+          lib/utils/crash-handler.cpp
+          lib/utils/crash-handler.hpp
           lib/utils/curl-helper.cpp
           lib/utils/curl-helper.hpp
           lib/utils/cursor-shape-changer.cpp
@@ -199,6 +207,8 @@ target_sources(
           lib/utils/file-selection.hpp
           lib/utils/filter-combo-box.cpp
           lib/utils/filter-combo-box.hpp
+          lib/utils/first-run-wizard.cpp
+          lib/utils/first-run-wizard.hpp
           lib/utils/help-icon.hpp
           lib/utils/help-icon.cpp
           lib/utils/item-selection-helpers.cpp
@@ -449,14 +459,29 @@ else()
   endif()
   if(PROCPS2_INCLUDE_DIR)
     find_package(PkgConfig REQUIRED)
-    pkg_check_modules(libproc2 IMPORTED_TARGET libproc2<4.0.5 QUIET)
-    if(libproc2_FOUND)
-      target_compile_definitions(${LIB_NAME} PRIVATE PROCPS2_USE_INFO)
-    endif()
     pkg_check_modules(libproc2 REQUIRED IMPORTED_TARGET libproc2)
     set(PROC_INCLUDE_DIR "${PROCPS2_INCLUDE_DIR}")
     target_compile_definitions(${LIB_NAME} PRIVATE PROCPS2_AVAILABLE)
     set(PROCESS_CONDITION_SUPPORTED 1)
+
+    # Check if PIDS_VAL takes 4 arguments (old API, pre-4.0.5) or 3 (new API)
+    include(CheckCSourceCompiles)
+    set(CMAKE_REQUIRED_INCLUDES "${PROCPS2_INCLUDE_DIR}")
+    set(CMAKE_REQUIRED_LIBRARIES proc2)
+    check_c_source_compiles(
+      "
+      #include <libproc2/pids.h>
+      int main(void) {
+        struct pids_stack *s = 0;
+        struct pids_info *i = 0;
+        (void)PIDS_VAL(0, str, s, i);
+        return 0;
+      }
+    "
+      PROCPS2_PIDS_VAL_TAKES_INFO)
+    if(PROCPS2_PIDS_VAL_TAKES_INFO)
+      target_compile_definitions(${LIB_NAME} PRIVATE PROCPS2_USE_INFO)
+    endif()
   endif()
   if(NOT DEFINED PROCESS_CONDITION_SUPPORTED)
     message(
@@ -482,7 +507,11 @@ endif()
 # --- End of section ---
 
 add_subdirectory(plugins)
-add_subdirectory(tests)
+
+option(ADVSS_ENABLE_TESTS "Build advanced-scene-switcher unit tests" OFF)
+if(ADVSS_ENABLE_TESTS)
+  add_subdirectory(tests)
+endif()
 
 # --- Install ---
 

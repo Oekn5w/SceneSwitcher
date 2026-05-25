@@ -1,8 +1,11 @@
 #include "variable.hpp"
 #include "math-helpers.hpp"
 #include "obs-module-helper.hpp"
+#include "plugin-state-helpers.hpp"
 #include "ui-helpers.hpp"
 #include "utility.hpp"
+
+#include <obs.hpp>
 
 #include <QGridLayout>
 
@@ -12,16 +15,32 @@ static std::deque<std::shared_ptr<Item>> variables;
 
 // Keep track of the last time a variable was changed to save some work when
 // when resolving strings containing variables, etc.
+static std::mutex lastVariableChangeMutex;
 static std::chrono::high_resolution_clock::time_point lastVariableChange{};
+
+static bool setup()
+{
+	AddEarlySaveStep(SaveVariables);
+	AddEarlyLoadStep(LoadVariables);
+	AddPluginCleanupStep([]() { variables.clear(); });
+	return true;
+}
+static bool setupDone = setup();
+
+static void setLastVariableChangeTime()
+{
+	std::lock_guard<std::mutex> lock(lastVariableChangeMutex);
+	lastVariableChange = std::chrono::high_resolution_clock::now();
+}
 
 Variable::Variable() : Item()
 {
-	lastVariableChange = std::chrono::high_resolution_clock::now();
+	setLastVariableChangeTime();
 }
 
 Variable::~Variable()
 {
-	lastVariableChange = std::chrono::high_resolution_clock::now();
+	setLastVariableChangeTime();
 }
 
 void Variable::Load(obs_data_t *obj)
@@ -37,7 +56,7 @@ void Variable::Load(obs_data_t *obj)
 		SetValue(_defaultValue);
 	}
 
-	lastVariableChange = std::chrono::high_resolution_clock::now();
+	setLastVariableChangeTime();
 }
 
 void Variable::Save(obs_data_t *obj) const
@@ -45,8 +64,11 @@ void Variable::Save(obs_data_t *obj) const
 	Item::Save(obj);
 	obs_data_set_int(obj, "saveAction", static_cast<int>(_saveAction));
 
-	if (_saveAction == SaveAction::SAVE) {
-		obs_data_set_string(obj, "value", _value.c_str());
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		if (_saveAction == SaveAction::SAVE) {
+			obs_data_set_string(obj, "value", _value.c_str());
+		}
 	}
 
 	obs_data_set_string(obj, "defaultValue", _defaultValue.c_str());
@@ -60,6 +82,18 @@ std::string Variable::Value(bool updateLastUsed) const
 	}
 
 	return _value;
+}
+
+std::string Variable::GetPreviousValue() const
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	return _previousValue;
+}
+
+int Variable::GetValueChangeCount() const
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	return _valueChangeCount;
 }
 
 std::optional<double> Variable::DoubleValue() const
@@ -79,8 +113,11 @@ void Variable::SetValue(const std::string &value)
 	_value = value;
 
 	UpdateLastUsed();
-	UpdateLastChanged();
-	lastVariableChange = std::chrono::high_resolution_clock::now();
+	if (_previousValue != _value) {
+		_lastChanged = std::chrono::high_resolution_clock::now();
+		++_valueChangeCount;
+	}
+	setLastVariableChangeTime();
 }
 
 void Variable::SetValue(double value)
@@ -90,6 +127,7 @@ void Variable::SetValue(double value)
 
 std::optional<uint64_t> Variable::GetSecondsSinceLastUse() const
 {
+	std::lock_guard<std::mutex> lock(_mutex);
 	if (_lastUsed.time_since_epoch().count() == 0) {
 		return {};
 	}
@@ -101,6 +139,7 @@ std::optional<uint64_t> Variable::GetSecondsSinceLastUse() const
 
 std::optional<uint64_t> Variable::GetSecondsSinceLastChange() const
 {
+	std::lock_guard<std::mutex> lock(_mutex);
 	if (_lastChanged.time_since_epoch().count() == 0) {
 		return {};
 	}
@@ -116,12 +155,10 @@ void Variable::UpdateLastUsed() const
 	_lastUsed = std::chrono::high_resolution_clock::now();
 }
 
-void Variable::UpdateLastChanged()
+void Variable::MarkAsUsed() const
 {
-	if (_previousValue != _value) {
-		_lastChanged = std::chrono::high_resolution_clock::now();
-		++_valueChangeCount;
-	}
+	std::lock_guard<std::mutex> lock(_mutex);
+	UpdateLastUsed();
 }
 
 static void populateSaveActionSelection(QComboBox *list)
@@ -206,7 +243,7 @@ bool VariableSettingsDialog::AskForSettings(QWidget *parent, Variable &settings)
 		dialog._defaultValue->toPlainText().toStdString();
 	settings._saveAction =
 		static_cast<Variable::SaveAction>(dialog._save->currentIndex());
-	lastVariableChange = std::chrono::high_resolution_clock::now();
+	setLastVariableChangeTime();
 
 	return true;
 }
@@ -393,34 +430,31 @@ static bool variableWithNameExists(const std::string &name)
 
 void SaveVariables(obs_data_t *obj)
 {
-	obs_data_array_t *variablesArray = obs_data_array_create();
+	OBSDataArrayAutoRelease variablesArray = obs_data_array_create();
 	for (const auto &v : variables) {
-		obs_data_t *array_obj = obs_data_create();
+		OBSDataAutoRelease array_obj = obs_data_create();
 		v->Save(array_obj);
 		obs_data_array_push_back(variablesArray, array_obj);
-		obs_data_release(array_obj);
 	}
 
 	obs_data_set_array(obj, "variables", variablesArray);
-	obs_data_array_release(variablesArray);
 }
 
 void LoadVariables(obs_data_t *obj)
 {
 	variables.clear();
 
-	obs_data_array_t *variablesArray = obs_data_get_array(obj, "variables");
+	OBSDataArrayAutoRelease variablesArray =
+		obs_data_get_array(obj, "variables");
 	size_t count = obs_data_array_count(variablesArray);
 
 	for (size_t i = 0; i < count; i++) {
-		obs_data_t *array_obj = obs_data_array_item(variablesArray, i);
+		OBSDataAutoRelease array_obj =
+			obs_data_array_item(variablesArray, i);
 		auto var = Variable::Create();
 		variables.emplace_back(var);
 		variables.back()->Load(array_obj);
-		obs_data_release(array_obj);
 	}
-
-	obs_data_array_release(variablesArray);
 }
 
 static void signalImportedVariables(void *varsPtr)
@@ -435,16 +469,15 @@ static void signalImportedVariables(void *varsPtr)
 
 void ImportVariables(obs_data_t *data)
 {
-	obs_data_array_t *array = obs_data_get_array(data, "variables");
+	OBSDataArrayAutoRelease array = obs_data_get_array(data, "variables");
 	size_t count = obs_data_array_count(array);
 
 	auto importedVars = new std::vector<std::shared_ptr<Item>>;
 
 	for (size_t i = 0; i < count; i++) {
-		obs_data_t *arrayElement = obs_data_array_item(array, i);
+		OBSDataAutoRelease arrayElement = obs_data_array_item(array, i);
 		auto var = Variable::Create();
 		var->Load(arrayElement);
-		obs_data_release(arrayElement);
 
 		if (variableWithNameExists(var->Name())) {
 			continue;
@@ -454,13 +487,12 @@ void ImportVariables(obs_data_t *data)
 		importedVars->emplace_back(var);
 	}
 
-	obs_data_array_release(array);
-
-	QeueUITask(signalImportedVariables, importedVars);
+	QueueUITask(signalImportedVariables, importedVars);
 }
 
 std::chrono::high_resolution_clock::time_point GetLastVariableChangeTime()
 {
+	std::lock_guard<std::mutex> lock(lastVariableChangeMutex);
 	return lastVariableChange;
 }
 

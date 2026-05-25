@@ -7,6 +7,17 @@ MacroCondition::MacroCondition(Macro *m, bool supportsVariableValue)
 {
 }
 
+bool MacroCondition::EvaluateCondition()
+{
+	bool newValue = CheckCondition();
+	_changed = _previousValue.has_value() && (*_previousValue != newValue);
+	const bool negate = _logic.IsNegationType(GetLogicType());
+	_risingEdge = _changed &&
+		      ((!negate && newValue) || (negate && !newValue));
+	_previousValue = newValue;
+	return newValue;
+}
+
 bool MacroCondition::Save(obs_data_t *obj) const
 {
 	MacroSegment::Save(obj);
@@ -20,6 +31,10 @@ bool MacroCondition::Load(obs_data_t *obj)
 {
 	MacroSegment::Load(obj);
 	_logic.Load(obj, "logic");
+	if (_logic.GetType() == Logic::Type::NONE) {
+		SetEnabled(false);
+		_logic.SetType(Logic::Type::AND);
+	}
 	_durationModifier.Load(obj);
 	return true;
 }
@@ -39,7 +54,8 @@ void MacroCondition::ValidateLogicSelection(bool isRootCondition,
 		return;
 	}
 
-	_logic.SetType(Logic::Type::NONE);
+	_logic.SetType(Logic::Type::AND);
+	SetEnabled(false);
 	blog(LOG_WARNING,
 	     "setting invalid logic selection to 'ignore' for macro %s",
 	     context);

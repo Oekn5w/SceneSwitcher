@@ -144,9 +144,14 @@ static void handleThrottling(const httplib::Result &response)
 		return;
 	}
 
-	blog(LOG_WARNING, "Twitch API access is throttled for %lld seconds!",
+	if (sleepDuration < std::chrono::seconds(1)) {
+		sleepDuration = std::chrono::seconds(1);
+	}
+
+	blog(LOG_WARNING,
+	     "Twitch API access is throttled for %lld milliseconds!",
 	     static_cast<long long int>(
-		     std::chrono::duration_cast<std::chrono::seconds>(
+		     std::chrono::duration_cast<std::chrono::milliseconds>(
 			     sleepDuration)
 			     .count()));
 	apiIsThrottling = true;
@@ -178,6 +183,11 @@ static RequestResult processResult(const httplib::Result &response,
 
 	if (response->body.empty()) {
 		return result;
+	}
+
+	if (response->status < 200 || response->status >= 300) {
+		vblog(LOG_INFO, "Twitch API error response: %s",
+		      response->body.c_str());
 	}
 
 	OBSDataAutoRelease replyData =
@@ -511,6 +521,13 @@ static RequestResult sendDeleteRequest(const TwitchToken &token,
 		cli.Delete(pathWithParams, headers, "", "application/json");
 
 	return processResult(response, __func__);
+}
+
+RequestResult SendDeleteRequest(const TwitchToken &token,
+				const std::string &uri, const std::string &path,
+				const httplib::Params &params)
+{
+	return sendDeleteRequest(token, uri, path, params);
 }
 
 void SetJsonTempVars(const std::string &jsonStr,

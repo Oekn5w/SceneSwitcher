@@ -1,21 +1,21 @@
 #include "macro-tree.hpp"
 #include "macro.hpp"
+#include "macro-search.hpp"
 #include "macro-signals.hpp"
 #include "path-helpers.hpp"
 #include "sync-helpers.hpp"
 #include "ui-helpers.hpp"
-#include "utility.hpp"
 
 #include <obs.h>
 #include <string>
 #include <QLabel>
 #include <QLineEdit>
 #include <QSpacerItem>
-#include <QPushButton>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QMouseEvent>
 #include <QStylePainter>
+#include <QToolTip>
 
 Q_DECLARE_METATYPE(std::shared_ptr<advss::Macro>);
 
@@ -61,12 +61,11 @@ MacroTreeItem::MacroTreeItem(MacroTree *tree, std::shared_ptr<Macro> macroItem,
 
 	_boxLayout = new QHBoxLayout();
 	_boxLayout->setContentsMargins(0, 0, 0, 0);
-	_boxLayout->addWidget(_running);
 	if (isGroup) {
 		_boxLayout->addWidget(_iconLabel);
 		_boxLayout->addSpacing(2);
-		_running->hide();
 	}
+	_boxLayout->addWidget(_running);
 	_boxLayout->addWidget(_label);
 #ifdef __APPLE__
 	/* Hack: Fixes a bug where scrollbars would be above the lock icon */
@@ -76,18 +75,47 @@ MacroTreeItem::MacroTreeItem(MacroTree *tree, std::shared_ptr<Macro> macroItem,
 	Update(true);
 	setLayout(_boxLayout);
 
-	auto setRunning = [this](bool val) {
-		_macro->SetPaused(!val);
-	};
-	connect(_running, &QAbstractButton::clicked, setRunning);
+	connect(_running, SIGNAL(clicked(bool)), this,
+		SLOT(RunningClicked(bool)));
 	connect(MacroSignalManager::Instance(), SIGNAL(HighlightChanged(bool)),
 		this, SLOT(EnableHighlight(bool)));
 	connect(MacroSignalManager::Instance(),
 		SIGNAL(Rename(const QString &, const QString &)), this,
 		SLOT(MacroRenamed(const QString &, const QString &)));
 	connect(&_timer, SIGNAL(timeout()), this, SLOT(HighlightIfExecuted()));
-	connect(&_timer, SIGNAL(timeout()), this, SLOT(UpdatePaused()));
+	connect(&_timer, SIGNAL(timeout()), this, SLOT(UpdateRunning()));
+
+	UpdateRunning();
 	_timer.start(1500);
+}
+
+bool MacroTreeItem::event(QEvent *event)
+{
+	if (event->type() != QEvent::ToolTip) {
+		return QFrame::event(event);
+	}
+
+	if (_macro->IsGroup()) {
+		return true;
+	}
+
+	QString text;
+	if (!_macro->WasExecutedSince({})) {
+		text = obs_module_text(
+			"AdvSceneSwitcher.macroTab.macroNotYetExecutedTooltip");
+	} else {
+		const QString formatStr = obs_module_text(
+			"AdvSceneSwitcher.macroTab.macroLastExecutedTooltip");
+		const auto secondsSinceLastRun =
+			std::chrono::duration_cast<std::chrono::seconds>(
+				std::chrono::high_resolution_clock::now() -
+				_macro->GetLastExecutionTime());
+		text = formatStr.arg(secondsSinceLastRun.count());
+	}
+
+	auto helpEvent = static_cast<QHelpEvent *>(event);
+	QToolTip::showText(helpEvent->globalPos(), text, this);
+	return true;
 }
 
 void MacroTreeItem::EnableHighlight(bool enable)
@@ -95,10 +123,90 @@ void MacroTreeItem::EnableHighlight(bool enable)
 	_highlight = enable;
 }
 
-void MacroTreeItem::UpdatePaused()
+void MacroTreeItem::RunningClicked(bool running)
+{
+	const auto updateWidget = [this](Macro *macro) {
+		if (!macro) {
+			return;
+		}
+
+		const auto &macros = GetTopLevelMacros();
+
+		bool found = false;
+		int idx = 0;
+		for (const auto &m : macros) {
+			if (m.get() == macro) {
+				found = true;
+				break;
+			}
+			idx++;
+		}
+
+		if (!found) {
+			return;
+		}
+
+		const auto widget = _tree->GetItemWidget(idx);
+		if (widget) {
+			widget->UpdateRunning();
+		}
+	};
+
+	if (!_macro->IsGroup()) {
+		_macro->SetPaused(!running);
+		if (!_macro->IsSubitem()) {
+			return;
+		}
+
+		const auto group = _macro->Parent();
+		updateWidget(group.get());
+		return;
+	}
+
+	const auto macros = GetGroupMacroEntries(_macro.get());
+	for (const auto &macro : macros) {
+		macro->SetPaused(!running);
+	}
+
+	// Update backend values before updating UI to prevent flickering in
+	// running state of the group
+	for (const auto &macro : macros) {
+		updateWidget(macro.get());
+	}
+	UpdateRunning();
+}
+
+void MacroTreeItem::UpdateRunning()
 {
 	const QSignalBlocker blocker(_running);
-	_running->setChecked(!_macro->Paused());
+
+	if (!_macro->IsGroup()) {
+		_running->setChecked(!_macro->Paused());
+		return;
+	}
+
+	const auto macros = GetGroupMacroEntries(_macro.get());
+	bool allRunning = true;
+	bool allPaused = true;
+	for (const auto &macro : macros) {
+		if (macro->Paused()) {
+			allRunning = false;
+		} else {
+			allPaused = false;
+		}
+	}
+
+	if (allRunning) {
+		_running->setCheckState(Qt::Checked);
+		return;
+	}
+
+	if (allPaused) {
+		_running->setCheckState(Qt::Unchecked);
+		return;
+	}
+
+	_running->setCheckState(Qt::PartiallyChecked);
 }
 
 void MacroTreeItem::HighlightIfExecuted()
@@ -107,10 +215,20 @@ void MacroTreeItem::HighlightIfExecuted()
 		return;
 	}
 
+	bool wasHighlighted = false;
 	if (_lastHighlightCheckTime.time_since_epoch().count() != 0 &&
 	    _macro->WasExecutedSince(_lastHighlightCheckTime)) {
 		HighlightWidget(this, Qt::green, QColor(0, 0, 0, 0), true);
+		wasHighlighted = true;
 	}
+
+	if (!wasHighlighted &&
+	    _lastHighlightCheckTime.time_since_epoch().count() != 0 &&
+	    _macro->ActionTriggerModePreventedActionsSince(
+		    _lastHighlightCheckTime)) {
+		HighlightWidget(this, Qt::yellow, QColor(0, 0, 0, 0), true);
+	}
+
 	_lastHighlightCheckTime = std::chrono::high_resolution_clock::now();
 }
 
@@ -187,7 +305,7 @@ void MacroTreeItem::Update(bool force)
 		_expand->blockSignals(true);
 		_expand->setChecked(_macro->IsCollapsed());
 		_expand->blockSignals(false);
-		connect(_expand, &QPushButton::toggled, this,
+		connect(_expand, &QCheckBox::toggled, this,
 			&MacroTreeItem::ExpandClicked);
 	} else {
 		_spacer = new QSpacerItem(3, 1);
@@ -213,7 +331,6 @@ void MacroTreeModel::Reset(std::deque<std::shared_ptr<Macro>> &newItems)
 	_macros = newItems;
 	endResetModel();
 
-	UpdateGroupState(false);
 	_mt->ResetWidgets();
 }
 
@@ -458,9 +575,6 @@ void MacroTreeModel::Remove(std::shared_ptr<Macro> item)
 
 	_mt->selectionModel()->clear();
 
-	if (isGroup) {
-		UpdateGroupState(true);
-	}
 	assert(IsInValidState());
 }
 
@@ -549,7 +663,6 @@ MacroTreeModel::MacroTreeModel(MacroTree *st_,
 	  _mt(st_),
 	  _macros(macros)
 {
-	UpdateGroupState(false);
 }
 
 int MacroTreeModel::rowCount(const QModelIndex &parent) const
@@ -703,7 +816,6 @@ void MacroTreeModel::GroupSelectedItems(QModelIndexList &indices)
 		offset++;
 	}
 
-	_hasGroups = true;
 	_mt->selectionModel()->clear();
 
 	Reset(_macros);
@@ -761,29 +873,12 @@ void MacroTreeModel::CollapseGroup(std::shared_ptr<Macro> item)
 	assert(IsInValidState());
 }
 
-void MacroTreeModel::UpdateGroupState(bool update)
-{
-	bool nowHasGroups = false;
-	for (auto &item : _macros) {
-		if (item->IsGroup()) {
-			nowHasGroups = true;
-			break;
-		}
-	}
-
-	if (nowHasGroups != _hasGroups) {
-		_hasGroups = nowHasGroups;
-		if (update) {
-			_mt->UpdateWidgets(true);
-		}
-	}
-}
-
 void MacroTree::Reset(std::deque<std::shared_ptr<Macro>> &macros,
 		      bool highlight)
 {
 	_highlight = highlight;
-	MacroTreeModel *mtm = new MacroTreeModel(this, macros);
+
+	auto mtm = new MacroTreeModel(this, macros);
 	setModel(mtm);
 	GetModel()->Reset(macros);
 	connect(selectionModel(),
@@ -840,7 +935,6 @@ MacroTree::MacroTree(QWidget *parent_) : QListView(parent_)
 void MacroTree::ResetWidgets()
 {
 	MacroTreeModel *mtm = GetModel();
-	mtm->UpdateGroupState(false);
 	int modelIdx = 0;
 	for (int i = 0; i < (int)mtm->_macros.size(); i++) {
 		QModelIndex index = mtm->createIndex(modelIdx, 0, nullptr);
@@ -869,7 +963,7 @@ void MacroTree::UpdateWidgets(bool force)
 
 	for (int i = 0; i < (int)mtm->_macros.size(); i++) {
 		std::shared_ptr<Macro> item = mtm->_macros[i];
-		MacroTreeItem *widget = GetItemWidget(i);
+		auto widget = GetItemWidget(i);
 
 		if (!widget) {
 			UpdateWidget(mtm->createIndex(i, 0, nullptr), item);
@@ -1184,7 +1278,7 @@ bool MacroTree::SelectionEmpty() const
 
 bool MacroTree::GroupsExist() const
 {
-	for (const auto &macro : GetMacros()) {
+	for (const auto &macro : GetTopLevelMacros()) {
 		if (macro->IsGroup()) {
 			return true;
 		}
@@ -1204,6 +1298,12 @@ void MacroTree::CollapseGroup(std::shared_ptr<Macro> item) const
 	mtm->CollapseGroup(item);
 }
 
+void MacroTree::RefreshFilter()
+{
+	UpdateWidgets();
+	doItemsLayout();
+}
+
 void MacroTree::MoveItemBefore(const std::shared_ptr<Macro> &item,
 			       const std::shared_ptr<Macro> &after) const
 {
@@ -1218,7 +1318,7 @@ void MacroTree::MoveItemAfter(const std::shared_ptr<Macro> &item,
 
 MacroTreeModel *MacroTree::GetModel() const
 {
-	return reinterpret_cast<MacroTreeModel *>(model());
+	return qobject_cast<MacroTreeModel *>(model());
 }
 
 void MacroTree::Remove(std::shared_ptr<Macro> item) const
@@ -1306,7 +1406,7 @@ void MacroTree::UngroupSelectedGroups()
 
 void MacroTree::ExpandAll()
 {
-	for (const auto &macro : GetMacros()) {
+	for (const auto &macro : GetTopLevelMacros()) {
 		if (!macro->IsGroup()) {
 			continue;
 		}
@@ -1316,7 +1416,7 @@ void MacroTree::ExpandAll()
 
 void MacroTree::CollapseAll()
 {
-	for (const auto &macro : GetMacros()) {
+	for (const auto &macro : GetTopLevelMacros()) {
 		if (!macro->IsGroup()) {
 			continue;
 		}
@@ -1333,8 +1433,8 @@ void MacroTree::SelectionChangedHelper(const QItemSelection &,
 
 inline MacroTreeItem *MacroTree::GetItemWidget(int idx) const
 {
-	QWidget *widget = indexWidget(GetModel()->createIndex(idx, 0, nullptr));
-	return reinterpret_cast<MacroTreeItem *>(widget);
+	auto widget = indexWidget(GetModel()->createIndex(idx, 0, nullptr));
+	return qobject_cast<MacroTreeItem *>(widget);
 }
 
 void MacroTree::paintEvent(QPaintEvent *event)
@@ -1361,14 +1461,25 @@ MacroTreeDelegate::MacroTreeDelegate(QObject *parent)
 QSize MacroTreeDelegate::sizeHint(const QStyleOptionViewItem &option,
 				  const QModelIndex &index) const
 {
-	MacroTree *tree = qobject_cast<MacroTree *>(parent());
-	QWidget *item = tree->indexWidget(index);
+	auto tree = qobject_cast<MacroTree *>(parent());
+	auto widget = tree->indexWidget(index);
 
-	if (!item) {
+	if (!widget) {
 		return QStyledItemDelegate::sizeHint(option, index);
 	}
 
-	return QSize(item->sizeHint());
+	auto name = index.data(Qt::AccessibleTextRole).toString();
+	auto macro = GetMacroByQString(name);
+
+	if (!macro) {
+		return QStyledItemDelegate::sizeHint(option, index);
+	}
+
+	if (MacroMatchesSearchFilter(macro)) {
+		return QSize(widget->sizeHint());
+	}
+
+	return QSize(0, 0);
 }
 
 } // namespace advss

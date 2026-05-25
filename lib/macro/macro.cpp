@@ -17,7 +17,16 @@
 
 namespace advss {
 
-static std::deque<std::shared_ptr<Macro>> macros;
+static bool setup()
+{
+	AddPluginCleanupStep([]() {
+		GetTopLevelMacros().clear();
+		GetTemporaryMacros().clear();
+	});
+	return true;
+}
+
+static bool setupDone = setup();
 
 Macro::Macro(const std::string &name) : _dockSettings(this)
 {
@@ -59,6 +68,7 @@ Macro::CreateGroup(const std::string &name,
 
 void Macro::RemoveGroup(std::shared_ptr<Macro> group)
 {
+	auto &macros = GetTopLevelMacros();
 	auto it = std::find(macros.begin(), macros.end(), group);
 	if (it == macros.end()) {
 		return;
@@ -75,6 +85,7 @@ void Macro::RemoveGroup(std::shared_ptr<Macro> group)
 
 void Macro::PrepareMoveToGroup(Macro *group, std::shared_ptr<Macro> item)
 {
+	auto &macros = GetTopLevelMacros();
 	for (const auto &m : macros) {
 		if (m.get() == group) {
 			PrepareMoveToGroup(m, item);
@@ -111,18 +122,18 @@ static bool checkCondition(const std::shared_ptr<MacroCondition> &condition)
 	const auto startTime = std::chrono::high_resolution_clock::now();
 	bool conditionMatched = false;
 	condition->WithLock([&condition, &conditionMatched]() {
-		conditionMatched = condition->CheckCondition();
+		conditionMatched = condition->EvaluateCondition();
 	});
+	condition->ApplyVarMappings();
 	const auto endTime = std::chrono::high_resolution_clock::now();
 	const auto timeSpent = endTime - startTime;
 
 	if (timeSpent >= perfLogThreshold) {
-		const long int ms =
-			std::chrono::duration_cast<std::chrono::milliseconds>(
-				timeSpent)
-				.count();
 		blog(LOG_WARNING,
-		     "spent %ld ms in %s condition check of macro '%s'!", ms,
+		     "spent %lld ms in %s condition check of macro '%s'!",
+		     (long long)std::chrono::duration_cast<
+			     std::chrono::milliseconds>(timeSpent)
+			     .count(),
 		     condition->GetId().c_str(),
 		     condition->GetMacro()->Name().c_str());
 	}
@@ -144,6 +155,15 @@ bool Macro::CheckConditionHelper(
 		wasEvaluated = true;
 		return conditionMatched;
 	};
+
+	if (!condition->Enabled()) {
+		vblog(LOG_INFO, "ignoring condition '%s' for '%s'",
+		      condition->GetId().c_str(), _name.c_str());
+		if (!_useShortCircuitEvaluation) {
+			(void)evaluateCondition();
+		}
+		return _matched;
+	}
 
 	const auto logicType = condition->GetLogicType();
 	if (logicType == Logic::Type::NONE) {
@@ -241,9 +261,37 @@ bool Macro::CheckConditions(bool ignorePause)
 
 	vblog(LOG_INFO, "Macro %s returned %d", _name.c_str(), _matched);
 
-	_conditionSateChanged = _lastMatched != _matched;
-	if (!_conditionSateChanged && _performActionsOnChange) {
-		_onPreventedActionExecution = true;
+	_actionModeMatch = false;
+	switch (_actionTriggerMode) {
+	case Macro::ActionTriggerMode::ALWAYS:
+		_actionModeMatch = true;
+		break;
+	case Macro::ActionTriggerMode::MACRO_RESULT_CHANGED:
+		_actionModeMatch = _lastMatched != _matched;
+		break;
+	case Macro::ActionTriggerMode::ANY_CONDITION_CHANGED:
+		for (const auto &condition : _conditions) {
+			if (condition->HasChanged()) {
+				_actionModeMatch = true;
+			}
+		}
+		break;
+	case Macro::ActionTriggerMode::ANY_CONDITION_TRIGGERED:
+		for (const auto &condition : _conditions) {
+			if (condition->IsRisingEdge()) {
+				_actionModeMatch = true;
+			}
+		}
+		break;
+	default:
+		break;
+	}
+
+	const bool hasActionsToExecute = _matched ? (_actions.size() > 0)
+						  : (_elseActions.size() > 0);
+	if (!_actionModeMatch && hasActionsToExecute && !_paused) {
+		_lastActionRunModePreventTime =
+			std::chrono::high_resolution_clock::now();
 	}
 
 	_lastMatched = _matched;
@@ -302,6 +350,16 @@ bool Macro::WasExecutedSince(const TimePoint &time) const
 	return _lastExecutionTime > time;
 }
 
+bool Macro::ActionTriggerModePreventedActionsSince(const TimePoint &time) const
+{
+	return _lastActionRunModePreventTime > time;
+}
+
+Macro::TimePoint Macro::GetLastExecutionTime() const
+{
+	return _lastExecutionTime;
+}
+
 bool Macro::ConditionsShouldBeChecked() const
 {
 	if (!_useCustomConditionCheckInterval) {
@@ -328,10 +386,9 @@ bool Macro::ShouldRunActions() const
 
 	const bool hasActionsToExecute =
 		!_paused && (_matched || _elseActions.size() > 0) &&
-		(!_performActionsOnChange || _conditionSateChanged);
+		_actionModeMatch;
 
-	if (VerboseLoggingEnabled() && _performActionsOnChange &&
-	    !_conditionSateChanged) {
+	if (VerboseLoggingEnabled() && !_actionModeMatch && !_paused) {
 		if (_matched && _actions.size() > 0) {
 			blog(LOG_INFO, "skip actions for Macro %s (on change)",
 			     _name.c_str());
@@ -362,10 +419,24 @@ void Macro::ResetTimers()
 	_lastExecutionTime = {};
 }
 
+void Macro::SetActionTriggerMode(ActionTriggerMode mode)
+{
+	_actionTriggerMode = mode;
+}
+
+Macro::ActionTriggerMode Macro::GetActionTriggerMode() const
+{
+	return _actionTriggerMode;
+}
+
 bool Macro::RunActionsHelper(
 	const std::deque<std::shared_ptr<MacroAction>> &actionsToRun,
 	bool ignorePause)
 {
+	if (_paused && !ignorePause) {
+		return true;
+	}
+
 	// Create copy of action list as elements might be removed, inserted, or
 	// reordered while actions are currently being executed.
 	auto actions = actionsToRun;
@@ -381,6 +452,7 @@ bool Macro::RunActionsHelper(
 			action->WithLock([&action, &actionResult]() {
 				actionResult = action->PerformAction();
 			});
+			action->ApplyVarMappings();
 			actionsExecutedSuccessfully =
 				actionsExecutedSuccessfully && actionResult;
 		} else {
@@ -413,11 +485,6 @@ bool Macro::RunElseActions(bool ignorePause)
 bool Macro::WasPausedSince(const TimePoint &time) const
 {
 	return _lastUnpauseTime > time;
-}
-
-void Macro::SetMatchOnChange(bool onChange)
-{
-	_performActionsOnChange = onChange;
 }
 
 void Macro::SetStopActionsIfNotDone(bool stopActionsIfNotDone)
@@ -740,7 +807,8 @@ bool Macro::Save(obs_data_t *obj, bool saveForCopy) const
 	obs_data_set_bool(obj, "pause", _paused);
 	obs_data_set_bool(obj, "parallel", _runInParallel);
 	obs_data_set_bool(obj, "checkConditionsInParallel", _checkInParallel);
-	obs_data_set_bool(obj, "onChange", _performActionsOnChange);
+	obs_data_set_int(obj, "actionTriggerMode",
+			 static_cast<int>(_actionTriggerMode));
 	obs_data_set_bool(obj, "skipExecOnStart", _skipExecOnStart);
 	obs_data_set_bool(obj, "stopActionsIfNotDone", _stopActionsIfNotDone);
 	obs_data_set_bool(obj, "useShortCircuitEvaluation",
@@ -826,7 +894,15 @@ bool Macro::Load(obs_data_t *obj)
 	}
 	_runInParallel = obs_data_get_bool(obj, "parallel");
 	_checkInParallel = obs_data_get_bool(obj, "checkConditionsInParallel");
-	_performActionsOnChange = obs_data_get_bool(obj, "onChange");
+	if (obs_data_has_user_value(obj, "onChange")) {
+		const bool onChange = obs_data_get_bool(obj, "onChange");
+		_actionTriggerMode =
+			onChange ? ActionTriggerMode::MACRO_RESULT_CHANGED
+				 : ActionTriggerMode::ALWAYS;
+	} else {
+		_actionTriggerMode = static_cast<ActionTriggerMode>(
+			obs_data_get_int(obj, "actionTriggerMode"));
+	}
 	_skipExecOnStart = obs_data_get_bool(obj, "skipExecOnStart");
 	_stopActionsIfNotDone = obs_data_get_bool(obj, "stopActionsIfNotDone");
 	_useShortCircuitEvaluation =
@@ -948,12 +1024,12 @@ bool Macro::PostLoad()
 bool Macro::SwitchesScene() const
 {
 	for (const auto &a : _actions) {
-		if (a->GetId() == GetSceneSwitchActionId()) {
+		if (a->GetId() == MacroAction::GetDefaultID()) {
 			return true;
 		}
 	}
 	for (const auto &a : _elseActions) {
-		if (a->GetId() == GetSceneSwitchActionId()) {
+		if (a->GetId() == MacroAction::GetDefaultID()) {
 			return true;
 		}
 	}
@@ -986,18 +1062,8 @@ bool Macro::HasValidSplitterPositions() const
 	       !_elseActionSplitterPosition.empty();
 }
 
-bool Macro::OnChangePreventedActionsRecently()
-{
-	if (_onPreventedActionExecution) {
-		_onPreventedActionExecution = false;
-		return _matched ? _actions.size() > 0 : _elseActions.size() > 0;
-	}
-	return false;
-}
-
 void Macro::ResetUIHelpers()
 {
-	_onPreventedActionExecution = false;
 	for (auto c : _conditions) {
 		c->GetHighlightAndReset();
 	}
@@ -1096,9 +1162,11 @@ void Macro::ClearHotkeys() const
 void setHotkeyDescriptionHelper(const char *formatModuleText,
 				const std::string name, const obs_hotkey_id id)
 {
+#ifndef UNIT_TEST
 	QString format{obs_module_text(formatModuleText)};
 	QString hotkeyDesc = format.arg(QString::fromStdString(name));
 	obs_hotkey_set_description(id, hotkeyDesc.toStdString().c_str());
+#endif // !UNIT_TEST
 }
 
 void Macro::SetHotkeysDesc() const
@@ -1114,7 +1182,7 @@ void Macro::SetHotkeysDesc() const
 void SaveMacros(obs_data_t *obj)
 {
 	obs_data_array_t *macroArray = obs_data_array_create();
-	for (const auto &m : macros) {
+	for (const auto &m : GetTopLevelMacros()) {
 		obs_data_t *array_obj = obs_data_create();
 
 		m->Save(array_obj);
@@ -1128,7 +1196,9 @@ void SaveMacros(obs_data_t *obj)
 
 void LoadMacros(obs_data_t *obj)
 {
+	auto &macros = GetTopLevelMacros();
 	macros.clear();
+
 	obs_data_array_t *macroArray = obs_data_get_array(obj, "macros");
 	size_t count = obs_data_array_count(macroArray);
 
@@ -1178,15 +1248,10 @@ void LoadMacros(obs_data_t *obj)
 	}
 }
 
-std::deque<std::shared_ptr<Macro>> &GetMacros()
-{
-	return macros;
-}
-
 bool CheckMacros()
 {
 	bool matchFound = false;
-	for (const auto &m : macros) {
+	for (const auto &m : GetTopLevelMacros()) {
 		if (!m->ConditionsShouldBeChecked()) {
 			vblog(LOG_INFO,
 			      "skipping condition check for macro \"%s\" "
@@ -1213,7 +1278,7 @@ bool RunMacros()
 	// reordered while macros are currently being executed.
 	// For example, this can happen if a macro is performing a wait action,
 	// as the main lock will be unlocked during this time.
-	auto runPhaseMacros = macros;
+	auto runPhaseMacros = GetTopLevelMacros();
 
 	// Avoid deadlocks when opening settings window and calling frontend
 	// API functions at the same time.
@@ -1253,41 +1318,14 @@ bool RunMacros()
 
 void StopAllMacros()
 {
-	for (const auto &m : macros) {
+	for (const auto &m : GetAllMacros()) {
 		m->Stop();
 	}
 }
 
-Macro *GetMacroByName(const char *name)
-{
-	for (const auto &m : macros) {
-		if (m->Name() == name) {
-			return m.get();
-		}
-	}
-
-	return nullptr;
-}
-
-Macro *GetMacroByQString(const QString &name)
-{
-	return GetMacroByName(name.toUtf8().constData());
-}
-
-std::weak_ptr<Macro> GetWeakMacroByName(const char *name)
-{
-	for (const auto &m : macros) {
-		if (m->Name() == name) {
-			return m;
-		}
-	}
-
-	return {};
-}
-
 void InvalidateMacroTempVarValues()
 {
-	for (const auto &m : macros) {
+	for (const auto &m : GetTopLevelMacros()) {
 		// Do not invalidate the temp vars set during condition checks
 		// or action executions running in parallel to the "main" macro
 		// loop, as otherwise access to the information stored in those
@@ -1302,6 +1340,8 @@ void InvalidateMacroTempVarValues()
 
 std::shared_ptr<Macro> GetMacroWithInvalidConditionInterval()
 {
+	auto &macros = GetTopLevelMacros();
+
 	if (macros.empty()) {
 		return {};
 	}

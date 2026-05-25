@@ -173,11 +173,10 @@ void PopulateTransitionSelection(QComboBox *sel, bool addCurrent, bool addAny,
 void PopulateWindowSelection(QComboBox *sel, bool addSelect)
 {
 
-	std::vector<std::string> windows;
-	GetWindowList(windows);
+	const auto windows = GetWindows();
 
-	for (std::string &window : windows) {
-		sel->addItem(window.c_str());
+	for (const auto &info : windows) {
+		sel->addItem(info.title.c_str());
 	}
 
 	sel->model()->sort(0);
@@ -257,8 +256,7 @@ void PopulateMediaSelection(QComboBox *sel, bool addSelect)
 
 void PopulateProcessSelection(QComboBox *sel, bool addSelect)
 {
-	QStringList processes;
-	GetProcessList(processes);
+	auto processes = GetProcessList();
 	processes.sort();
 	for (QString &process : processes) {
 		sel->addItem(process);

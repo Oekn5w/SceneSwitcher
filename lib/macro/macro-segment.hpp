@@ -9,15 +9,23 @@
 
 #include <QWidget>
 #include <QFrame>
+#include <QPushButton>
 #include <QVBoxLayout>
 #include <QTimer>
 #include <obs-data.h>
+#include <memory>
 
 class QLabel;
 
 namespace advss {
 
 class Macro;
+class Variable;
+
+struct VarMapping {
+	TempVariableRef tempVar;
+	std::weak_ptr<Variable> variable;
+};
 
 class EXPORT MacroSegment : public Lockable {
 public:
@@ -28,12 +36,15 @@ public:
 	int GetIndex() const { return _idx; }
 	void SetCollapsed(bool collapsed) { _collapsed = collapsed; }
 	bool GetCollapsed() const { return _collapsed; }
+	void SetVarMappingExpanded(bool expanded);
+	bool GetVarMappingExpanded() const { return _varMappingExpanded; }
 	void SetUseCustomLabel(bool enable) { _useCustomLabel = enable; }
 	bool GetUseCustomLabel() const { return _useCustomLabel; }
 	void SetCustomLabel(const std::string &label) { _customLabel = label; }
 	std::string GetCustomLabel() const { return _customLabel; }
 	virtual bool Save(obs_data_t *obj) const = 0;
 	virtual bool Load(obs_data_t *obj) = 0;
+	virtual std::vector<TempVariableRef> GetTempVarRefs() const;
 	virtual bool PostLoad();
 	virtual std::string GetShortDesc() const;
 	virtual std::string GetId() const = 0;
@@ -42,6 +53,11 @@ public:
 	void SetEnabled(bool);
 	bool Enabled() const;
 	virtual std::string GetVariableValue() const;
+	void ApplyVarMappings();
+	const std::vector<VarMapping> &GetVarMappings() const;
+	void SetVarMappings(const std::vector<VarMapping> &mappings);
+	std::vector<TempVariable> GetOwnTempVars() const;
+	void FixupVarMappingRefs();
 
 protected:
 	friend bool SupportsVariableValue(MacroSegment *);
@@ -54,6 +70,7 @@ protected:
 	void AddTempvar(const std::string &id, const std::string &name,
 			const std::string &description = "");
 
+	bool IsTempVarInUse(const std::string &id) const;
 	void SetTempVarValue(const std::string &id, const std::string &value);
 
 	template<typename T, typename = std::enable_if_t<
@@ -62,6 +79,14 @@ protected:
 	{
 		SetTempVarValue(id, value ? std::string("true")
 					  : std::string("false"));
+	}
+
+	template<typename F, typename = std::enable_if_t<std::is_invocable_v<F>>>
+	void SetTempVarValue(const std::string &id, F &&valueProvider)
+	{
+		if (IsTempVarInUse(id)) {
+			SetTempVarValue(id, valueProvider());
+		}
 	}
 
 private:
@@ -77,6 +102,7 @@ private:
 	// UI helper
 	bool _highlight = false;
 	bool _collapsed = false;
+	bool _varMappingExpanded = false;
 	bool _enabled = true;
 
 	// Custom header labels
@@ -89,6 +115,7 @@ private:
 	int _variableRefs = 0;
 	std::string _variableValue;
 	std::vector<TempVariable> _tempVariables;
+	std::vector<VarMapping> _varMappings;
 
 	friend class Macro;
 };
@@ -108,8 +135,11 @@ public:
 	virtual std::shared_ptr<MacroSegment> Data() const = 0;
 	virtual void SetupWidgets(bool basicSetup = false) = 0;
 
+	void SetupVarMappings(MacroSegment *segment);
+
 public slots:
 	void HeaderInfoChanged(const QString &);
+	void ShowVariableMappings(bool show);
 
 protected slots:
 	void Collapsed(bool) const;
@@ -124,6 +154,8 @@ protected:
 	QLabel *_headerInfo;
 	QWidget *_frame;
 	QVBoxLayout *_contentLayout;
+	TempVarOutputMappingsWidget *_outputMappings;
+	QPushButton *_varMappingToggle;
 	bool _allWidgetsAreSetup = false;
 
 private:

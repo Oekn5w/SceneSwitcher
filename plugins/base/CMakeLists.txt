@@ -25,6 +25,8 @@ target_sources(
           macro-action-obs-settings.hpp
           macro-action-osc.cpp
           macro-action-osc.hpp
+          macro-action-play-audio.cpp
+          macro-action-play-audio.hpp
           macro-action-plugin-state.cpp
           macro-action-plugin-state.hpp
           macro-action-profile.cpp
@@ -57,6 +59,8 @@ target_sources(
           macro-action-sequence.hpp
           macro-action-source.cpp
           macro-action-source.hpp
+          macro-action-source-interaction.cpp
+          macro-action-source-interaction.hpp
           macro-action-streaming.cpp
           macro-action-streaming.hpp
           macro-action-studio-mode.cpp
@@ -144,12 +148,24 @@ target_sources(
 
 target_sources(
   ${PROJECT_NAME}
-  PRIVATE utils/audio-helpers.cpp
+  PRIVATE utils/source-interaction-recorder.cpp
+          utils/source-interaction-recorder.hpp
+          utils/source-interaction-step.cpp
+          utils/source-interaction-step.hpp
+          utils/source-interaction-step-edit.cpp
+          utils/source-interaction-step-edit.hpp
+          utils/source-interaction-step-list.cpp
+          utils/source-interaction-step-list.hpp
+          utils/source-preview-widget.cpp
+          utils/source-preview-widget.hpp
+          utils/audio-helpers.cpp
           utils/audio-helpers.hpp
           utils/connection-manager.cpp
           utils/connection-manager.hpp
           utils/cursor-helpers.cpp
           utils/cursor-helpers.hpp
+          utils/day-of-week-selector.cpp
+          utils/day-of-week-selector.hpp
           utils/filter-selection.cpp
           utils/filter-selection.hpp
           utils/hotkey-helpers.cpp
@@ -166,6 +182,8 @@ target_sources(
           utils/scene-item-selection.hpp
           utils/scene-item-transform-helpers.cpp
           utils/scene-item-transform-helpers.hpp
+          utils/transition-helpers.cpp
+          utils/transition-helpers.hpp
           utils/source-properties-button.cpp
           utils/source-properties-button.hpp
           utils/source-settings-helpers.cpp

@@ -329,10 +329,10 @@ void PreviewImage::MarkPatternMatch(
 	const PatternImageData &patternImageData)
 {
 	cv::Mat result;
-	double matchValue = std::numeric_limits<double>::signaling_NaN();
-	MatchPattern(screenshot, patternImageData, patternMatchParams.threshold,
-		     result, &matchValue, patternMatchParams.useAlphaAsMask,
-		     patternMatchParams.matchMode);
+	double matchValue = MatchPattern(screenshot, patternImageData,
+					 patternMatchParams.threshold, result,
+					 patternMatchParams.useAlphaAsMask,
+					 patternMatchParams.matchMode);
 	emit ValueUpdate(matchValue);
 	if (result.total() == 0 || countNonZero(result) == 0) {
 		emit StatusUpdate(obs_module_text(
@@ -391,6 +391,7 @@ void PreviewImage::MarkOCRMatch(QImage &screenshot,
 	if (!text) {
 		emit StatusUpdate(obs_module_text(
 			"AdvSceneSwitcher.condition.video.ocrMatchFail"));
+		return;
 	}
 
 	QString status(obs_module_text(

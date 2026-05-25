@@ -366,7 +366,7 @@ static void runSegmentHighlightChecksHelper(MacroSegmentList *list)
 		// highlight its segments if required
 		auto macroAction = dynamic_cast<MacroActionMacro *>(data.get());
 		if (macroAction &&
-		    macroAction->_action ==
+		    macroAction->GetAction() ==
 			    MacroActionMacro::Action::NESTED_MACRO) {
 			continue;
 		}
@@ -418,8 +418,7 @@ void MacroEdit::PopulateMacroActions(Macro &m, uint32_t afterIdx)
 	ui->actionsList->SetVisibilityCheckEnable(false);
 
 	for (; afterIdx < actions.size(); afterIdx++) {
-		auto newEntry = new MacroActionEdit(this, &actions[afterIdx],
-						    actions[afterIdx]->GetId());
+		auto newEntry = new MacroActionEdit(this, &actions[afterIdx]);
 		ui->actionsList->Add(newEntry);
 	}
 
@@ -444,8 +443,7 @@ void MacroEdit::PopulateMacroElseActions(Macro &m, uint32_t afterIdx)
 	ui->elseActionsList->SetVisibilityCheckEnable(false);
 
 	for (; afterIdx < actions.size(); afterIdx++) {
-		auto newEntry = new MacroActionEdit(this, &actions[afterIdx],
-						    actions[afterIdx]->GetId());
+		auto newEntry = new MacroActionEdit(this, &actions[afterIdx]);
 		ui->elseActionsList->Add(newEntry);
 	}
 
@@ -472,8 +470,7 @@ void MacroEdit::PopulateMacroConditions(Macro &m, uint32_t afterIdx)
 
 	for (; afterIdx < conditions.size(); afterIdx++) {
 		auto newEntry = new MacroConditionEdit(
-			this, &conditions[afterIdx],
-			conditions[afterIdx]->GetId(), root);
+			this, &conditions[afterIdx], root);
 		ui->conditionsList->Add(newEntry);
 		root = false;
 	}
@@ -1083,13 +1080,17 @@ void MacroEdit::AddMacroAction(Macro *macro, int idx, const std::string &id,
 		RunAndClearPostLoadSteps();
 		macro->UpdateActionIndices();
 		ui->actionsList->Insert(
-			idx,
-			new MacroActionEdit(this, &macro->Actions()[idx], id));
+			idx, new MacroActionEdit(this, &macro->Actions()[idx]));
 		SetActionData(*macro);
 	}
 	HighlightAction(idx);
 	ui->actionsList->SetHelpMsgVisible(false);
 	emit(MacroSegmentOrderChanged());
+
+	QTimer::singleShot(0, this, [this]() {
+		ui->actionsList->ensureWidgetVisible(
+			ui->actionsList->WidgetAt(currentActionIdx));
+	});
 }
 
 void MacroEdit::AddMacroAction(int idx)
@@ -1117,6 +1118,9 @@ void MacroEdit::AddMacroAction(int idx)
 		macro->Actions().at(idx - 1)->Save(data);
 	}
 	AddMacroAction(macro.get(), idx, id, data);
+	if (idx < (int)macro->Actions().size()) {
+		macro->Actions().at(idx)->FixupVarMappingRefs();
+	}
 }
 
 void MacroEdit::on_actionAdd_clicked()
@@ -1386,13 +1390,18 @@ void MacroEdit::AddMacroElseAction(Macro *macro, int idx, const std::string &id,
 		RunAndClearPostLoadSteps();
 		macro->UpdateElseActionIndices();
 		ui->elseActionsList->Insert(
-			idx, new MacroActionEdit(
-				     this, &macro->ElseActions()[idx], id));
+			idx,
+			new MacroActionEdit(this, &macro->ElseActions()[idx]));
 		SetElseActionData(*macro);
 	}
 	HighlightElseAction(idx);
 	ui->elseActionsList->SetHelpMsgVisible(false);
 	emit(MacroSegmentOrderChanged());
+
+	QTimer::singleShot(0, this, [this]() {
+		ui->elseActionsList->ensureWidgetVisible(
+			ui->elseActionsList->WidgetAt(currentElseActionIdx));
+	});
 }
 
 void MacroEdit::AddMacroElseAction(int idx)
@@ -1420,6 +1429,9 @@ void MacroEdit::AddMacroElseAction(int idx)
 		macro->ElseActions().at(idx - 1)->Save(data);
 	}
 	AddMacroElseAction(macro.get(), idx, id, data);
+	if (idx < (int)macro->ElseActions().size()) {
+		macro->ElseActions().at(idx)->FixupVarMappingRefs();
+	}
 }
 
 void MacroEdit::RemoveMacroElseAction(int idx)
@@ -1564,6 +1576,9 @@ void MacroEdit::AddMacroCondition(int idx)
 		macro->Conditions().at(idx - 1)->Save(data);
 	}
 	AddMacroCondition(macro.get(), idx, id, data.Get(), logic);
+	if (idx < (int)macro->Conditions().size()) {
+		macro->Conditions().at(idx)->FixupVarMappingRefs();
+	}
 }
 
 void MacroEdit::AddMacroCondition(Macro *macro, int idx, const std::string &id,
@@ -1589,12 +1604,17 @@ void MacroEdit::AddMacroCondition(Macro *macro, int idx, const std::string &id,
 		ui->conditionsList->Insert(
 			idx,
 			new MacroConditionEdit(this, &macro->Conditions()[idx],
-					       id, idx == 0));
+					       idx == 0));
 		SetConditionData(*macro);
 	}
 	HighlightCondition(idx);
 	ui->conditionsList->SetHelpMsgVisible(false);
 	emit(MacroSegmentOrderChanged());
+
+	QTimer::singleShot(0, this, [this]() {
+		ui->conditionsList->ensureWidgetVisible(
+			ui->conditionsList->WidgetAt(currentConditionIdx));
+	});
 }
 
 void MacroEdit::on_conditionAdd_clicked()
