@@ -1,7 +1,9 @@
 #include "macro-action-scene-collection.hpp"
+
 #include "layout-helpers.hpp"
 #include "plugin-state-helpers.hpp"
 #include "selection-helpers.hpp"
+#include "ui-helpers.hpp"
 
 #include <obs-frontend-api.h>
 
@@ -23,7 +25,13 @@ bool MacroActionSceneCollection::PerformAction()
 	if (SettingsWindowIsOpened()) {
 		return false;
 	}
-	obs_frontend_set_current_scene_collection(_sceneCollection.c_str());
+
+	const auto collectionName = _sceneCollection;
+	QueueUITask([collectionName]() {
+		obs_frontend_set_current_scene_collection(
+			collectionName.c_str());
+	});
+
 	// It does not make sense to continue as the current settings will be
 	// invalid after switching scene collection.
 	return false;

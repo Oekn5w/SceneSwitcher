@@ -6,16 +6,19 @@
 #include "obs-module-helper.hpp"
 #include "sync-helpers.hpp"
 #include "temp-variable.hpp"
+#include "variable-ref.hpp"
 
-#include <QWidget>
-#include <QFrame>
-#include <QPushButton>
-#include <QVBoxLayout>
-#include <QTimer>
 #include <obs-data.h>
+
+#include <QHBoxLayout>
+#include <QPushButton>
+#include <QWidget>
+
 #include <memory>
 
+class QFrame;
 class QLabel;
+class QVBoxLayout;
 
 namespace advss {
 
@@ -24,7 +27,7 @@ class Variable;
 
 struct VarMapping {
 	TempVariableRef tempVar;
-	std::weak_ptr<Variable> variable;
+	VariableRef variable;
 };
 
 class EXPORT MacroSegment : public Lockable {
@@ -134,6 +137,7 @@ public:
 	void SetSelected(bool);
 	virtual std::shared_ptr<MacroSegment> Data() const = 0;
 	virtual void SetupWidgets(bool basicSetup = false) = 0;
+	virtual void FocusTypeSelection() {}
 
 	void SetupVarMappings(MacroSegment *segment);
 

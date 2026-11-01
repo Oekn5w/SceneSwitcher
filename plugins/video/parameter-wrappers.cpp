@@ -1,8 +1,9 @@
 #include "parameter-wrappers.hpp"
+#include "cascade-classifier-detector.hpp"
 #include "log-helper.hpp"
+#include "source-helpers.hpp"
 
 #include <QFileInfo>
-#include <source-helpers.hpp>
 
 namespace advss {
 
@@ -48,45 +49,6 @@ bool PatternMatchParameters::Load(obs_data_t *obj)
 	return true;
 }
 
-static std::shared_ptr<cv::CascadeClassifier>
-initObjectCascade(std::string &path)
-{
-	auto cascade = std::make_shared<cv::CascadeClassifier>();
-	try {
-		cascade->load(path);
-	} catch (...) {
-		blog(LOG_WARNING, "failed to load model data \"%s\"",
-		     path.c_str());
-	}
-	return cascade;
-}
-
-bool ObjDetectParameters::LoadModelData()
-{
-	const auto path = QString::fromStdString(modelPath);
-	if (!QFileInfo(path).exists(path)) {
-		cascade.reset();
-		return false;
-	}
-
-	cascade = initObjectCascade(modelPath);
-	return !cascade->empty();
-}
-
-bool ObjDetectParameters::Save(obs_data_t *obj) const
-{
-	auto data = obs_data_create();
-	obs_data_set_string(data, "modelPath", modelPath.c_str());
-	scaleFactor.Save(data, "scaleFactor");
-	obs_data_set_int(data, "minNeighbors", minNeighbors);
-	minSize.Save(data, "minSize");
-	maxSize.Save(data, "maxSize");
-	obs_data_set_obj(obj, "objectMatchData", data);
-	obs_data_set_int(data, "version", 1);
-	obs_data_release(data);
-	return true;
-}
-
 static bool isScaleFactorValid(double scaleFactor)
 {
 	return scaleFactor > 1.;
@@ -98,11 +60,42 @@ static bool isMinNeighborsValid(int minNeighbors)
 	       minNeighbors <= maxMinNeighbors;
 }
 
-bool ObjDetectParameters::Load(obs_data_t *obj)
+bool CascadeClassifierParameters::LoadModelData()
+{
+	_loadedModelPath = _modelPath;
+	const auto path = QString::fromStdString(_loadedModelPath);
+	if (!QFileInfo(path).exists(path)) {
+		_detector.reset();
+		return false;
+	}
+	auto det = std::make_unique<CascadeClassifierDetector>();
+	if (!det->Load(_loadedModelPath)) {
+		_detector.reset();
+		return false;
+	}
+	_detector = std::move(det);
+	return true;
+}
+
+bool CascadeClassifierParameters::Save(obs_data_t *obj) const
+{
+	auto data = obs_data_create();
+	_modelPath.Save(data, "modelPath");
+	scaleFactor.Save(data, "scaleFactor");
+	obs_data_set_int(data, "minNeighbors", minNeighbors);
+	minSize.Save(data, "minSize");
+	maxSize.Save(data, "maxSize");
+	obs_data_set_int(data, "version", 2);
+	obs_data_set_obj(obj, "objectMatchData", data);
+	obs_data_release(data);
+	return true;
+}
+
+bool CascadeClassifierParameters::Load(obs_data_t *obj)
 {
 	// TODO: Remove this fallback in a future version
 	if (!obs_data_has_user_value(obj, "patternMatchData")) {
-		modelPath = obs_data_get_string(obj, "modelDataPath");
+		_modelPath = obs_data_get_string(obj, "modelDataPath");
 		scaleFactor = obs_data_get_double(obj, "scaleFactor");
 		if (!isScaleFactorValid(scaleFactor)) {
 			scaleFactor = 1.1;
@@ -116,11 +109,27 @@ bool ObjDetectParameters::Load(obs_data_t *obj)
 		return true;
 	}
 	auto data = obs_data_get_obj(obj, "objectMatchData");
-	modelPath = obs_data_get_string(data, "modelPath");
+	_modelPath.Load(data, "modelPath");
 	scaleFactor.Load(data, "scaleFactor");
 	// TODO: Remove this fallback in a future version
 	if (!obs_data_has_user_value(data, "version")) {
 		scaleFactor = obs_data_get_double(data, "scaleFactor");
+	} else if (obs_data_get_int(data, "version") == 1) {
+#ifdef _WIN32
+		// On Windows the plugin directory moved from
+		// "Program Files/.../data/obs-plugins/advanced-scene-switcher"
+		// to "ProgramData/.../plugins/advanced-scene-switcher/data",
+		// which invalidates previously saved default model paths.
+		const std::string oldPrefix =
+			"../../data/obs-plugins/advanced-scene-switcher/res/cascadeClassifiers/";
+		const std::string oldPath = _modelPath.UnresolvedValue();
+		if (oldPath.substr(0, oldPrefix.size()) == oldPrefix) {
+			_modelPath = std::string(obs_get_module_data_path(
+					     obs_current_module())) +
+				     "/res/cascadeClassifiers/" +
+				     oldPath.substr(oldPrefix.size());
+		}
+#endif
 	}
 	if (scaleFactor.IsFixedType() && !isScaleFactorValid(scaleFactor)) {
 		scaleFactor = 1.1;
@@ -132,27 +141,30 @@ bool ObjDetectParameters::Load(obs_data_t *obj)
 	minSize.Load(data, "minSize");
 	maxSize.Load(data, "maxSize");
 	obs_data_release(data);
-
 	return true;
 }
 
-bool ObjDetectParameters::SetModelPath(const std::string &path)
+bool CascadeClassifierParameters::SetModelPath(const std::string &path)
 {
-	modelPath = path;
+	_modelPath = path;
 	return LoadModelData();
 }
 
-std::shared_ptr<cv::CascadeClassifier> ObjDetectParameters::GetModel()
+ObjectDetector *CascadeClassifierParameters::GetDetector()
 {
-	if (cascade && !cascade->empty()) {
-		return cascade;
+	if (!_detector || !_detector->IsLoaded() ||
+	    std::string(_modelPath) != _loadedModelPath) {
+		if (!LoadModelData()) {
+			return nullptr;
+		}
 	}
-
-	if (!LoadModelData()) {
-		return {};
-	}
-
-	return cascade;
+	auto *cascade =
+		static_cast<CascadeClassifierDetector *>(_detector.get());
+	cascade->scaleFactor = scaleFactor;
+	cascade->minNeighbors = minNeighbors;
+	cascade->minSize = minSize.CV();
+	cascade->maxSize = maxSize.CV();
+	return _detector.get();
 }
 
 bool AreaParameters::Save(obs_data_t *obj) const
@@ -258,27 +270,6 @@ OBSWeakSource VideoInput::GetVideo() const
 	return nullptr;
 }
 
-static void SaveColor(obs_data_t *obj, const char *name, const QColor &color)
-{
-	auto data = obs_data_create();
-	obs_data_set_int(data, "red", color.red());
-	obs_data_set_int(data, "green", color.green());
-	obs_data_set_int(data, "blue", color.blue());
-	obs_data_set_obj(obj, name, data);
-	obs_data_release(data);
-}
-
-static QColor LoadColor(obs_data_t *obj, const char *name)
-{
-	QColor color = Qt::black;
-	auto data = obs_data_get_obj(obj, name);
-	color.setRed(obs_data_get_int(data, "red"));
-	color.setGreen(obs_data_get_int(data, "green"));
-	color.setBlue(obs_data_get_int(data, "blue"));
-	obs_data_release(data);
-	return color;
-}
-
 OCRParameters::OCRParameters()
 {
 	Setup();
@@ -303,9 +294,6 @@ OCRParameters::OCRParameters(const OCRParameters &other)
 	  useConfig(other.useConfig),
 	  configFile(other.configFile)
 {
-	if (!initDone) {
-		Setup();
-	}
 }
 
 OCRParameters &OCRParameters::operator=(const OCRParameters &other)
@@ -319,9 +307,7 @@ OCRParameters &OCRParameters::operator=(const OCRParameters &other)
 	languageCode = other.languageCode;
 	useConfig = other.useConfig;
 	configFile = other.configFile;
-	if (!initDone) {
-		Setup();
-	}
+	initDone = false;
 	return *this;
 }
 
@@ -333,11 +319,11 @@ bool OCRParameters::Save(obs_data_t *obj) const
 	tesseractBasePath.Save(data, "tesseractBasePath");
 	languageCode.Save(data, "language");
 	obs_data_set_bool(data, "useConfig", useConfig);
-	obs_data_set_string(data, "configFile", configFile.c_str());
-	SaveColor(data, "textColor", color);
+	configFile.Save(data, "configFile");
+	color.Save(data, "textColor");
 	colorThreshold.Save(data, "colorThreshold");
 	obs_data_set_int(data, "pageSegMode", static_cast<int>(pageSegMode));
-	obs_data_set_int(data, "version", 2);
+	obs_data_set_int(data, "version", 3);
 	obs_data_set_obj(obj, "ocrData", data);
 	obs_data_release(data);
 	return true;
@@ -356,11 +342,28 @@ bool OCRParameters::Load(obs_data_t *obj)
 		tesseractBasePath = std::string(obs_get_module_data_path(
 					    obs_current_module())) +
 				    "/res/ocr/";
+	} else if (obs_data_get_int(data, "version") == 2) {
+#ifdef _WIN32
+		// On Windows the plugin directory moved from
+		// "Program Files/.../data/obs-plugins/advanced-scene-switcher"
+		// to "ProgramData/.../plugins/advanced-scene-switcher/data",
+		// which invalidates the previously saved default OCR path.
+		const std::string oldPath = tesseractBasePath;
+		if (oldPath ==
+			    "../../data/obs-plugins/advanced-scene-switcher/res/ocr/" ||
+		    oldPath ==
+			    "../../data/obs-plugins/advanced-scene-switcher/res/ocr") {
+			tesseractBasePath =
+				std::string(obs_get_module_data_path(
+					obs_current_module())) +
+				"/res/ocr/";
+		}
+#endif
 	}
 	useConfig = obs_data_get_bool(data, "useConfig");
-	configFile = obs_data_get_string(data, "configFile");
+	configFile.Load(data, "configFile");
 
-	color = LoadColor(data, "textColor");
+	color.Load(data, "textColor");
 	if (obs_data_has_user_value(data, "version")) {
 		colorThreshold.Load(data, "colorThreshold");
 	}
@@ -380,66 +383,84 @@ void OCRParameters::SetPageMode(tesseract::PageSegMode mode)
 	}
 }
 
+tesseract::TessBaseAPI *OCRParameters::GetOCR()
+{
+	if (!initDone || !SetupIsUpToDate()) {
+		Setup();
+	}
+	return initDone ? ocr.get() : nullptr;
+}
+
+static bool containsVariables(const std::string &value)
+{
+	return std::string(StringVariable(value)) != value;
+}
+
+static bool modelFileExists(const std::string &basePath,
+			    const std::string &languageCode)
+{
+	const auto dataPath = QString::fromStdString(basePath) + "/" +
+			      QString::fromStdString(languageCode) +
+			      ".traineddata";
+	return QFileInfo::exists(dataPath);
+}
+
 bool OCRParameters::SetLanguageCode(const std::string &value)
 {
-	const auto dataPath = QString::fromStdString(tesseractBasePath) + "/" +
-			      QString::fromStdString(value) + ".traineddata";
-	QFileInfo fileInfo(dataPath);
-	if (!fileInfo.exists(dataPath)) {
+	// Variable values can change later, so only fixed values are validated
+	if (!containsVariables(value) &&
+	    !modelFileExists(tesseractBasePath, value)) {
 		return false;
 	}
 	languageCode = value;
-	Setup();
+	initDone = false;
 	return true;
-}
-
-std::string OCRParameters::GetLanguageCode() const
-{
-	return languageCode;
 }
 
 bool OCRParameters::SetTesseractBasePath(const std::string &value)
 {
-	const auto dataPath = QString::fromStdString(value) + "/" +
-			      QString::fromStdString(languageCode) +
-			      ".traineddata";
-	QFileInfo fileInfo(dataPath);
-	if (!fileInfo.exists(dataPath)) {
+	if (!containsVariables(value) &&
+	    !modelFileExists(value, languageCode)) {
 		return false;
 	}
 	tesseractBasePath = value;
-	Setup();
+	initDone = false;
 	return true;
-}
-
-std::string OCRParameters::GetTesseractBasePath() const
-{
-	return tesseractBasePath;
 }
 
 void OCRParameters::EnableCustomConfig(bool enable)
 {
 	useConfig = enable;
-	Setup();
+	initDone = false;
 }
 
 void OCRParameters::SetCustomConfigFile(const std::string &filename)
 {
 	configFile = filename;
-	Setup();
+	initDone = false;
+}
+
+bool OCRParameters::SetupIsUpToDate() const
+{
+	return setupBasePath == std::string(tesseractBasePath) &&
+	       setupLanguageCode == std::string(languageCode) &&
+	       setupConfigFile == std::string(configFile);
 }
 
 void OCRParameters::Setup()
 {
+	setupBasePath = tesseractBasePath;
+	setupLanguageCode = languageCode;
+	setupConfigFile = configFile;
+
 	ocr = std::make_unique<tesseract::TessBaseAPI>();
 	if (!ocr) {
 		initDone = false;
 		return;
 	}
 
-	const std::string dataPath = std::string(tesseractBasePath) + "/";
-	const std::string modelFile =
-		std::string(languageCode) + ".traineddata";
+	const std::string dataPath = setupBasePath + "/";
+	const std::string modelFile = setupLanguageCode + ".traineddata";
 	const auto modelFullPath = QString::fromStdString(dataPath) +
 				   QString::fromStdString(modelFile);
 	QFileInfo modelFileInfo(modelFullPath);
@@ -451,7 +472,7 @@ void OCRParameters::Setup()
 		return;
 	}
 
-	auto configPath = QString::fromStdString(configFile);
+	auto configPath = QString::fromStdString(setupConfigFile);
 	QFileInfo configFileInfo(configPath);
 	bool configFileExists = configFileInfo.exists(configPath);
 
@@ -463,8 +484,8 @@ void OCRParameters::Setup()
 		setupWithConfig = false;
 	}
 
-	char *configs[] = {configFile.data()};
-	if (ocr->Init(dataPath.c_str(), languageCode.c_str(),
+	char *configs[] = {setupConfigFile.data()};
+	if (ocr->Init(dataPath.c_str(), setupLanguageCode.c_str(),
 		      tesseract::OEM_DEFAULT,
 		      setupWithConfig ? configs : nullptr,
 		      setupWithConfig ? 1 : 0, nullptr, nullptr, false) != 0) {
@@ -481,7 +502,7 @@ void OCRParameters::Setup()
 bool ColorParameters::Save(obs_data_t *obj) const
 {
 	auto data = obs_data_create();
-	SaveColor(data, "color", color);
+	color.Save(data, "color");
 	colorThreshold.Save(data, "colorThreshold");
 	matchThreshold.Save(data, "matchThreshold");
 	obs_data_set_obj(obj, "colorData", data);
@@ -492,7 +513,7 @@ bool ColorParameters::Save(obs_data_t *obj) const
 bool ColorParameters::Load(obs_data_t *obj)
 {
 	auto data = obs_data_get_obj(obj, "colorData");
-	color = LoadColor(data, "color");
+	color.Load(data, "color");
 	colorThreshold.Load(data, "colorThreshold");
 	matchThreshold.Load(data, "matchThreshold");
 	obs_data_release(data);

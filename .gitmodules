@@ -1,9 +1,6 @@
 [submodule "deps/asio"]
 	path = deps/asio
 	url = https://github.com/chriskohlhoff/asio.git
-[submodule "deps/websocketpp"]
-	path = deps/websocketpp
-	url = https://github.com/zaphoyd/websocketpp.git
 [submodule "deps/opencv"]
 	path = deps/opencv
 	url = https://github.com/opencv/opencv.git
@@ -28,12 +25,15 @@
 [submodule "deps/libusb"]
 	path = deps/libusb
 	url = https://github.com/libusb/libusb.git
-[submodule "deps/date"]
-	path = deps/date
-	url = https://github.com/HowardHinnant/date.git
 [submodule "deps/jsoncons"]
 	path = deps/jsoncons
 	url = https://github.com/danielaparker/jsoncons.git
 [submodule "deps/paho.mqtt.cpp"]
 	path = deps/paho.mqtt.cpp
 	url = https://github.com/eclipse-paho/paho.mqtt.cpp.git
+[submodule "deps/opencv_contrib"]
+	path = deps/opencv_contrib
+	url = https://github.com/opencv/opencv_contrib.git
+[submodule "deps/whisper.cpp"]
+	path = deps/whisper.cpp
+	url = https://github.com/ggml-org/whisper.cpp.git

@@ -1,17 +1,21 @@
 #include "macro-edit.hpp"
+
+#include "condition-logic.hpp"
+#include "macro-undo-redo.hpp"
 #include "cursor-shape-changer.hpp"
-#include "macro.hpp"
 #include "macro-action-edit.hpp"
 #include "macro-action-macro.hpp"
 #include "macro-condition-edit.hpp"
+#include "macro-helpers.hpp"
 #include "macro-segment-copy-paste.hpp"
 #include "macro-segment-list.hpp"
 #include "macro-settings.hpp"
 #include "macro-signals.hpp"
+#include "macro.hpp"
 #include "math-helpers.hpp"
 #include "name-dialog.hpp"
-#include "path-helpers.hpp"
 #include "obs-module-helper.hpp"
+#include "path-helpers.hpp"
 #include "plugin-state-helpers.hpp"
 #include "splitter-helpers.hpp"
 #include "tab-helpers.hpp"
@@ -254,6 +258,92 @@ std::shared_ptr<Macro> MacroEdit::GetMacro() const
 	return _currentMacro;
 }
 
+void MacroEdit::InsertSegmentWidget(SegmentType type, int idx)
+{
+	auto macro = _currentMacro;
+	if (!macro) {
+		return;
+	}
+
+	switch (type) {
+	case SegmentType::ACTION: {
+		if (idx < 0 || idx > (int)macro->Actions().size()) {
+			break;
+		}
+		ui->actionsList->Insert(
+			idx, new MacroActionEdit(this, &macro->Actions()[idx]));
+		SetActionData(*macro);
+		ui->actionsList->SetHelpMsgVisible(false);
+		break;
+	}
+	case SegmentType::ELSE_ACTION: {
+		if (idx < 0 || idx > (int)macro->ElseActions().size()) {
+			break;
+		}
+		ui->elseActionsList->Insert(
+			idx,
+			new MacroActionEdit(this, &macro->ElseActions()[idx]));
+		SetElseActionData(*macro);
+		ui->elseActionsList->SetHelpMsgVisible(false);
+		break;
+	}
+	case SegmentType::CONDITION: {
+		if (idx < 0 || idx > (int)macro->Conditions().size()) {
+			break;
+		}
+		ui->conditionsList->Insert(
+			idx,
+			new MacroConditionEdit(this, &macro->Conditions()[idx],
+					       idx == 0));
+		if (idx == 0 && macro->Conditions().size() > 1) {
+			static_cast<MacroConditionEdit *>(
+				ui->conditionsList->WidgetAt(1))
+				->SetRootNode(false);
+		}
+		SetConditionData(*macro);
+		ui->conditionsList->SetHelpMsgVisible(false);
+		break;
+	}
+	}
+}
+
+void MacroEdit::RemoveSegmentWidget(SegmentType type, int idx)
+{
+	auto macro = _currentMacro;
+	if (!macro) {
+		return;
+	}
+
+	switch (type) {
+	case SegmentType::ACTION:
+		if (idx >= 0 &&
+		    idx < ui->actionsList->ContentLayout()->count()) {
+			ui->actionsList->Remove(idx);
+			SetActionData(*macro);
+		}
+		break;
+	case SegmentType::ELSE_ACTION:
+		if (idx >= 0 &&
+		    idx < ui->elseActionsList->ContentLayout()->count()) {
+			ui->elseActionsList->Remove(idx);
+			SetElseActionData(*macro);
+		}
+		break;
+	case SegmentType::CONDITION:
+		if (idx >= 0 &&
+		    idx < ui->conditionsList->ContentLayout()->count()) {
+			ui->conditionsList->Remove(idx);
+			if (idx == 0 && !macro->Conditions().empty()) {
+				static_cast<MacroConditionEdit *>(
+					ui->conditionsList->WidgetAt(0))
+					->SetRootNode(true);
+			}
+			SetConditionData(*macro);
+		}
+		break;
+	}
+}
+
 void MacroEdit::ClearSegmentWidgetCacheFor(Macro *macro) const
 {
 	ui->conditionsList->ClearWidgetsFromCacheFor(macro);
@@ -292,7 +382,7 @@ isValidMacroSegmentIdx(const std::deque<std::shared_ptr<MacroSegment>> &list,
 	return (idx > 0 || (unsigned)idx < list.size());
 }
 
-void MacroEdit::SetupMacroSegmentSelection(MacroSection type, int idx)
+void MacroEdit::SetupMacroSegmentSelection(SegmentType type, int idx)
 {
 	auto macro = _currentMacro;
 	if (!macro) {
@@ -305,7 +395,7 @@ void MacroEdit::SetupMacroSegmentSelection(MacroSection type, int idx)
 	std::deque<std::shared_ptr<MacroSegment>> segments;
 
 	switch (type) {
-	case MacroEdit::MacroSection::CONDITIONS:
+	case MacroEdit::SegmentType::CONDITION:
 		setList = ui->conditionsList;
 		setIdx = &currentConditionIdx;
 		segments = {macro->Conditions().begin(),
@@ -316,7 +406,7 @@ void MacroEdit::SetupMacroSegmentSelection(MacroSection type, int idx)
 		resetIdx1 = &currentActionIdx;
 		resetIdx2 = &currentElseActionIdx;
 		break;
-	case MacroEdit::MacroSection::ACTIONS:
+	case MacroEdit::SegmentType::ACTION:
 		setList = ui->actionsList;
 		setIdx = &currentActionIdx;
 		segments = {macro->Actions().begin(), macro->Actions().end()};
@@ -326,7 +416,7 @@ void MacroEdit::SetupMacroSegmentSelection(MacroSection type, int idx)
 		resetIdx1 = &currentConditionIdx;
 		resetIdx2 = &currentElseActionIdx;
 		break;
-	case MacroEdit::MacroSection::ELSE_ACTIONS:
+	case MacroEdit::SegmentType::ELSE_ACTION:
 		setList = ui->elseActionsList;
 		setIdx = &currentElseActionIdx;
 		segments = {macro->ElseActions().begin(),
@@ -650,6 +740,18 @@ void MacroEdit::HighlightCondition(int idx, QColor color) const
 	ui->conditionsList->Highlight(idx, color);
 }
 
+void MacroEdit::ScrollAndFocusNewSegment(MacroSegmentList *list, int newIdx,
+					 int *currentIdx)
+{
+	QTimer::singleShot(0, this, [this, list, newIdx, currentIdx]() {
+		list->ensureWidgetVisible(list->WidgetAt(*currentIdx));
+		auto *widget = list->WidgetAt(newIdx);
+		if (widget) {
+			widget->FocusTypeSelection();
+		}
+	});
+}
+
 static void resetSegmentHighlights(MacroSegmentList *list)
 {
 	MacroSegmentEdit *widget = nullptr;
@@ -950,7 +1052,7 @@ void MacroEdit::UpMacroSegmentHotkey()
 	int conditionSize = macro->Conditions().size();
 
 	if (currentActionIdx == -1 && currentConditionIdx == -1) {
-		if (lastInteracted == MacroSection::CONDITIONS) {
+		if (lastInteracted == SegmentType::CONDITION) {
 			if (conditionSize == 0) {
 				MacroActionSelectionChanged(0);
 			} else {
@@ -1006,7 +1108,7 @@ void MacroEdit::DownMacroSegmentHotkey()
 	int conditionSize = macro->Conditions().size();
 
 	if (currentActionIdx == -1 && currentConditionIdx == -1) {
-		if (lastInteracted == MacroSection::CONDITIONS) {
+		if (lastInteracted == SegmentType::CONDITION) {
 			if (conditionSize == 0) {
 				MacroActionSelectionChanged(0);
 			} else {
@@ -1069,6 +1171,13 @@ void MacroEdit::AddMacroAction(Macro *macro, int idx, const std::string &id,
 		return;
 	}
 
+	Macro *const parentMacro = macro->GetNestedParentMacro();
+	OBSDataAutoRelease parentBeforeData;
+	if (parentMacro) {
+		parentBeforeData = obs_data_create();
+		parentMacro->Save(parentBeforeData);
+	}
+
 	{
 		auto lock = LockContext();
 		macro->Actions().emplace(macro->Actions().begin() + idx,
@@ -1083,14 +1192,16 @@ void MacroEdit::AddMacroAction(Macro *macro, int idx, const std::string &id,
 			idx, new MacroActionEdit(this, &macro->Actions()[idx]));
 		SetActionData(*macro);
 	}
+	if (parentMacro) {
+		RegisterMacroModifyUndoRedo(parentMacro, parentBeforeData);
+	} else {
+		RegisterSegmentAddUndoRedo(macro, SegmentType::ACTION, idx);
+	}
 	HighlightAction(idx);
 	ui->actionsList->SetHelpMsgVisible(false);
 	emit(MacroSegmentOrderChanged());
 
-	QTimer::singleShot(0, this, [this]() {
-		ui->actionsList->ensureWidgetVisible(
-			ui->actionsList->WidgetAt(currentActionIdx));
-	});
+	ScrollAndFocusNewSegment(ui->actionsList, idx, &currentActionIdx);
 }
 
 void MacroEdit::AddMacroAction(int idx)
@@ -1151,6 +1262,24 @@ void MacroEdit::RemoveMacroAction(int idx)
 		return;
 	}
 
+	Macro *const parentMacro = macro->GetNestedParentMacro();
+	OBSDataAutoRelease parentBeforeData;
+	if (parentMacro) {
+		parentBeforeData = obs_data_create();
+		parentMacro->Save(parentBeforeData);
+	} else {
+		OBSDataAutoRelease segData = obs_data_create();
+		std::string segId;
+		{
+			auto lock = LockContext();
+			macro->Actions().at(idx)->Save(segData);
+			segId = macro->Actions().at(idx)->GetId();
+		}
+		RegisterSegmentRemoveUndoRedo(macro.get(), SegmentType::ACTION,
+					      idx, segId, segData,
+					      (int)Logic::Type::ROOT_NONE);
+	}
+
 	{
 		auto lock = LockContext();
 		ui->actionsList->Remove(idx);
@@ -1160,8 +1289,11 @@ void MacroEdit::RemoveMacroAction(int idx)
 		macro->UpdateActionIndices();
 		SetActionData(*macro);
 	}
+	if (parentMacro) {
+		RegisterMacroModifyUndoRedo(parentMacro, parentBeforeData);
+	}
 	MacroActionSelectionChanged(-1);
-	lastInteracted = MacroSection::ACTIONS;
+	lastInteracted = SegmentType::ACTION;
 	emit(MacroSegmentOrderChanged());
 }
 
@@ -1341,7 +1473,7 @@ void MacroEdit::MoveMacroActionDown(int idx)
 
 void MacroEdit::MacroElseActionSelectionChanged(int idx)
 {
-	SetupMacroSegmentSelection(MacroSection::ELSE_ACTIONS, idx);
+	SetupMacroSegmentSelection(SegmentType::ELSE_ACTION, idx);
 }
 
 void MacroEdit::MacroElseActionReorder(int to, int from)
@@ -1378,6 +1510,13 @@ void MacroEdit::AddMacroElseAction(Macro *macro, int idx, const std::string &id,
 		return;
 	}
 
+	Macro *const parentMacro = macro->GetNestedParentMacro();
+	OBSDataAutoRelease parentBeforeData;
+	if (parentMacro) {
+		parentBeforeData = obs_data_create();
+		parentMacro->Save(parentBeforeData);
+	}
+
 	{
 		auto lock = LockContext();
 		macro->ElseActions().emplace(macro->ElseActions().begin() + idx,
@@ -1394,14 +1533,18 @@ void MacroEdit::AddMacroElseAction(Macro *macro, int idx, const std::string &id,
 			new MacroActionEdit(this, &macro->ElseActions()[idx]));
 		SetElseActionData(*macro);
 	}
+	if (parentMacro) {
+		RegisterMacroModifyUndoRedo(parentMacro, parentBeforeData);
+	} else {
+		RegisterSegmentAddUndoRedo(macro, SegmentType::ELSE_ACTION,
+					   idx);
+	}
 	HighlightElseAction(idx);
 	ui->elseActionsList->SetHelpMsgVisible(false);
 	emit(MacroSegmentOrderChanged());
 
-	QTimer::singleShot(0, this, [this]() {
-		ui->elseActionsList->ensureWidgetVisible(
-			ui->elseActionsList->WidgetAt(currentElseActionIdx));
-	});
+	ScrollAndFocusNewSegment(ui->elseActionsList, idx,
+				 &currentElseActionIdx);
 }
 
 void MacroEdit::AddMacroElseAction(int idx)
@@ -1445,6 +1588,25 @@ void MacroEdit::RemoveMacroElseAction(int idx)
 		return;
 	}
 
+	Macro *const parentMacro = macro->GetNestedParentMacro();
+	OBSDataAutoRelease parentBeforeData;
+	if (parentMacro) {
+		parentBeforeData = obs_data_create();
+		parentMacro->Save(parentBeforeData);
+	} else {
+		OBSDataAutoRelease segData = obs_data_create();
+		std::string segId;
+		{
+			auto lock = LockContext();
+			macro->ElseActions().at(idx)->Save(segData);
+			segId = macro->ElseActions().at(idx)->GetId();
+		}
+		RegisterSegmentRemoveUndoRedo(macro.get(),
+					      SegmentType::ELSE_ACTION, idx,
+					      segId, segData,
+					      (int)Logic::Type::ROOT_NONE);
+	}
+
 	{
 		auto lock = LockContext();
 		ui->elseActionsList->Remove(idx);
@@ -1454,8 +1616,11 @@ void MacroEdit::RemoveMacroElseAction(int idx)
 		macro->UpdateElseActionIndices();
 		SetElseActionData(*macro);
 	}
+	if (parentMacro) {
+		RegisterMacroModifyUndoRedo(parentMacro, parentBeforeData);
+	}
 	MacroElseActionSelectionChanged(-1);
-	lastInteracted = MacroSection::ELSE_ACTIONS;
+	lastInteracted = SegmentType::ELSE_ACTION;
 	emit(MacroSegmentOrderChanged());
 }
 
@@ -1516,7 +1681,7 @@ void MacroEdit::MoveMacroElseActionDown(int idx)
 
 void MacroEdit::MacroActionSelectionChanged(int idx)
 {
-	SetupMacroSegmentSelection(MacroSection::ACTIONS, idx);
+	SetupMacroSegmentSelection(SegmentType::ACTION, idx);
 }
 
 void MacroEdit::MacroActionReorder(int to, int from)
@@ -1589,6 +1754,13 @@ void MacroEdit::AddMacroCondition(Macro *macro, int idx, const std::string &id,
 		return;
 	}
 
+	Macro *const parentMacro = macro->GetNestedParentMacro();
+	OBSDataAutoRelease parentBeforeData;
+	if (parentMacro) {
+		parentBeforeData = obs_data_create();
+		parentMacro->Save(parentBeforeData);
+	}
+
 	{
 		auto lock = LockContext();
 		auto cond = macro->Conditions().emplace(
@@ -1607,14 +1779,16 @@ void MacroEdit::AddMacroCondition(Macro *macro, int idx, const std::string &id,
 					       idx == 0));
 		SetConditionData(*macro);
 	}
+	if (parentMacro) {
+		RegisterMacroModifyUndoRedo(parentMacro, parentBeforeData);
+	} else {
+		RegisterSegmentAddUndoRedo(macro, SegmentType::CONDITION, idx);
+	}
 	HighlightCondition(idx);
 	ui->conditionsList->SetHelpMsgVisible(false);
 	emit(MacroSegmentOrderChanged());
 
-	QTimer::singleShot(0, this, [this]() {
-		ui->conditionsList->ensureWidgetVisible(
-			ui->conditionsList->WidgetAt(currentConditionIdx));
-	});
+	ScrollAndFocusNewSegment(ui->conditionsList, idx, &currentConditionIdx);
 }
 
 void MacroEdit::on_conditionAdd_clicked()
@@ -1645,6 +1819,26 @@ void MacroEdit::RemoveMacroCondition(int idx)
 		return;
 	}
 
+	Macro *const parentMacro = macro->GetNestedParentMacro();
+	OBSDataAutoRelease parentBeforeData;
+	if (parentMacro) {
+		parentBeforeData = obs_data_create();
+		parentMacro->Save(parentBeforeData);
+	} else {
+		OBSDataAutoRelease segData = obs_data_create();
+		std::string segId;
+		int logic;
+		{
+			auto lock = LockContext();
+			macro->Conditions().at(idx)->Save(segData);
+			segId = macro->Conditions().at(idx)->GetId();
+			logic = (int)macro->Conditions().at(idx)->GetLogicType();
+		}
+		RegisterSegmentRemoveUndoRedo(macro.get(),
+					      SegmentType::CONDITION, idx,
+					      segId, segData, logic);
+	}
+
 	{
 		auto lock = LockContext();
 		ui->conditionsList->Remove(idx);
@@ -1659,8 +1853,11 @@ void MacroEdit::RemoveMacroCondition(int idx)
 		}
 		SetConditionData(*macro);
 	}
+	if (parentMacro) {
+		RegisterMacroModifyUndoRedo(parentMacro, parentBeforeData);
+	}
 	MacroConditionSelectionChanged(-1);
-	lastInteracted = MacroSection::CONDITIONS;
+	lastInteracted = SegmentType::CONDITION;
 	emit(MacroSegmentOrderChanged());
 }
 
@@ -1785,7 +1982,7 @@ void MacroEdit::MoveMacroConditionDown(int idx)
 
 void MacroEdit::MacroConditionSelectionChanged(int idx)
 {
-	SetupMacroSegmentSelection(MacroSection::CONDITIONS, idx);
+	SetupMacroSegmentSelection(SegmentType::CONDITION, idx);
 }
 
 void MacroEdit::MacroConditionReorder(int to, int from)
@@ -1844,6 +2041,13 @@ bool MacroEdit::IsEmpty() const
 
 	return ui->conditionsList->IsEmpty() && ui->actionsList->IsEmpty() &&
 	       ui->elseActionsList->IsEmpty();
+}
+
+void MacroEdit::HideElseSection() const
+{
+	ui->toggleElseActions->setVisible(false);
+	ui->macroElseActions->setMaximumHeight(0);
+	ui->macroElseActionSplitter->handle(1)->setCursor(Qt::ArrowCursor);
 }
 
 void MacroEdit::ShowAllMacroSections()

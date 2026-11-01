@@ -1,12 +1,12 @@
 #include "event-sub.hpp"
+
+#include "log-helper.hpp"
 #include "token.hpp"
 #include "twitch-helpers.hpp"
+#include "twitch-timestamp.hpp"
 
 #include <log-helper.hpp>
-
-#ifdef VERIFY_TIMESTAMPS
-#include "date/tz.h"
-#endif
+#include <plugin-state-helpers.hpp>
 
 using namespace std::chrono_literals;
 
@@ -70,6 +70,22 @@ void EventSub::UnregisterInstance()
 	auto it = std::remove(_instances.begin(), _instances.end(), this);
 	_instances.erase(it, _instances.end());
 }
+
+void EventSub::DisconnectAll()
+{
+	std::lock_guard<std::mutex> lock(_instancesMtx);
+	for (auto *instance : _instances) {
+		instance->Disconnect();
+	}
+}
+
+static bool setupEventSubSupport()
+{
+	AddStopStep(EventSub::DisconnectAll);
+	return true;
+}
+
+static bool _eventSubSetup = setupEventSubSupport();
 
 void EventSub::ConnectThread()
 {
@@ -262,11 +278,20 @@ std::string EventSub::AddEventSubscription(std::shared_ptr<TwitchToken> token,
 		return "";
 	}
 
+	// Capture the session ID and release the lock before making the HTTP
+	// request. Holding the mutex during a network call would block
+	// SubscriptionIsActive() on the condition-check thread for the entire
+	// duration of the request, causing visibly slow macro evaluations.
+	const std::string sessionID = eventSub->_sessionID;
+	lock.unlock();
+
 	OBSDataAutoRelease postData = copyData(subscription.data);
-	setTransportData(postData.Get(), eventSub->_sessionID);
+	setTransportData(postData.Get(), sessionID);
 	auto result = SendPostRequest(*token, registerSubscriptionURL.data(),
 				      registerSubscriptionPath.data(), {},
 				      postData.Get());
+
+	lock.lock();
 
 	if (result.status != 202) {
 		const char *error = obs_data_get_string(result.data, "error");
@@ -278,6 +303,24 @@ std::string EventSub::AddEventSubscription(std::shared_ptr<TwitchToken> token,
 		      message ? message : "no message");
 		eventSub->LogActiveSubscriptions();
 		return "";
+	}
+
+	// Verify the session has not been replaced while the HTTP request was
+	// in flight (e.g. a reconnect occurred). If it was, the subscription
+	// we just created belongs to a dead session and must be discarded so
+	// the caller will retry with the new session ID.
+	if (eventSub->_sessionID != sessionID) {
+		blog(LOG_INFO,
+		     "discarding Twitch EventSub registration - session ID "
+		     "changed during HTTP request");
+		return "";
+	}
+
+	// Another thread may have registered the same subscription while the
+	// lock was released.
+	if (isAlreadySubscribed(eventSub->_activeSubscriptions, subscription)) {
+		eventSub->LogActiveSubscriptions();
+		return eventSub->_activeSubscriptions.find(subscription)->id;
 	}
 
 	OBSDataArrayAutoRelease replyArray =
@@ -311,46 +354,6 @@ void EventSub::OnOpen(connection_hdl)
 {
 	vblog(LOG_INFO, "Twitch EventSub connection opened");
 	_connected = true;
-}
-
-static bool isValidTimestamp(const std::string &timestamp)
-{
-#ifdef VERIFY_TIMESTAMPS
-	// Example input: 2023-07-19T14:56:51.634234626Z
-	try {
-		// Discard the nanosecond part
-		static constexpr size_t dotPos = 19;
-		std::string trimmed = timestamp.substr(0, dotPos);
-		auto tzStart = timestamp.find_first_of("Z+-", dotPos);
-		trimmed = timestamp.substr(0, dotPos);
-		if (tzStart != std::string::npos) {
-			trimmed += timestamp.substr(tzStart);
-		}
-
-		std::istringstream in(trimmed);
-		date::sys_time<std::chrono::seconds> parsedTime;
-		in >> date::parse("%FT%TZ", parsedTime);
-		if (in.fail()) {
-			blog(LOG_WARNING, "failed to parse timestamp %s",
-			     timestamp.c_str());
-			return false;
-		}
-
-		auto now = date::zoned_time{date::current_zone(),
-					    std::chrono::system_clock::now()}
-				   .get_sys_time();
-
-		auto duration = now - parsedTime;
-		// Clocks might be off by a bit, so allow negative values also
-		return duration <= 10min && duration >= -1min;
-	} catch (const std::exception &e) {
-		blog(LOG_WARNING, "%s: %s", __func__, e.what());
-		return false;
-	}
-#else
-	// Just assume timestamps are always valid
-	return true;
-#endif
 }
 
 bool EventSub::IsValidMessageID(const std::string &id)
@@ -392,7 +395,7 @@ EventSub::ParseWebSocketMessage(const EventSubWSClient::message_ptr &message)
 	OBSDataAutoRelease metadata = obs_data_get_obj(json, "metadata");
 	std::string timestamp =
 		obs_data_get_string(metadata, "message_timestamp");
-	if (_validateTimestamps && !isValidTimestamp(timestamp)) {
+	if (_validateTimestamps && !IsValidEventSubTimestamp(timestamp)) {
 		blog(LOG_WARNING,
 		     "discarding Twitch EventSub with invalid timestamp %s",
 		     timestamp.c_str());
@@ -439,9 +442,10 @@ void EventSub::OnMessage(connection_hdl, EventSubWSClient::message_ptr message)
 
 void EventSub::HandleWelcome(obs_data_t *data)
 {
+	std::lock_guard<std::mutex> lock(_subscriptionMtx);
 	OBSDataAutoRelease session = obs_data_get_obj(data, "session");
 	_sessionID = obs_data_get_string(session, "id");
-	ClearActiveSubscriptions();
+	_activeSubscriptions.clear();
 	blog(LOG_INFO, "Twitch EventSub connected");
 	vblog(LOG_INFO, "Twitch EventSub session id: %s", _sessionID.c_str());
 }

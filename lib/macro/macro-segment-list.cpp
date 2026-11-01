@@ -3,6 +3,7 @@
 #include "ui-helpers.hpp"
 
 #include <QEvent>
+#include <QApplication>
 #include <QDrag>
 #include <QGridLayout>
 #include <QMimeData>
@@ -201,6 +202,8 @@ bool MacroSegmentList::PopulateWidgetsFromCache(const Macro *macro)
 		_contentLayout->addWidget(widget);
 		widget->show();
 	}
+	// Widgets are now owned by the layout again, so the cache entry is stale.
+	_widgetCache.erase(it);
 
 	adjustSize();
 	updateGeometry();
@@ -275,6 +278,7 @@ void MacroSegmentList::mousePressEvent(QMouseEvent *event)
 {
 	if (event->button() == Qt::LeftButton ||
 	    event->button() == Qt::RightButton) {
+		_dragStartPos = event->globalPosition().toPoint();
 		_dragPosition = GetDragIndex(event->globalPosition().toPoint());
 		emit SelectionChanged(_dragPosition);
 	} else {
@@ -285,6 +289,11 @@ void MacroSegmentList::mousePressEvent(QMouseEvent *event)
 void MacroSegmentList::mouseMoveEvent(QMouseEvent *event)
 {
 	if (event->buttons() & Qt::LeftButton && _dragPosition != -1) {
+		if ((event->globalPosition().toPoint() - _dragStartPos)
+			    .manhattanLength() <
+		    QApplication::startDragDistance()) {
+			return;
+		}
 		auto item = _contentLayout->itemAt(_dragPosition);
 		if (!item) {
 			return;
@@ -463,7 +472,17 @@ void MacroSegmentList::SetupVisibleMacroSegmentWidgets()
 
 	const auto viewportRect = viewport()->rect();
 
-	for (auto segment : widget()->findChildren<MacroSegmentEdit *>()) {
+	for (int i = 0; i < _contentLayout->count(); ++i) {
+		auto item = _contentLayout->itemAt(i);
+		if (!item) {
+			continue;
+		}
+
+		auto segment = dynamic_cast<MacroSegmentEdit *>(item->widget());
+		if (!segment) {
+			continue;
+		}
+
 		const auto pos = segment->mapTo(viewport(), QPoint(0, 0));
 		const QRect rect(pos, segment->size());
 		if (!viewportRect.intersects(rect)) {

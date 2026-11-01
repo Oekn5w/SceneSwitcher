@@ -19,8 +19,10 @@
 #include <obs-frontend-api.h>
 #include <QAction>
 #include <QDirIterator>
+#include <QInputDialog>
 #include <QLibrary>
 #include <QMainWindow>
+#include <QMessageBox>
 #include <QTextStream>
 #include <regex>
 
@@ -429,6 +431,10 @@ void AutoStartActionQueues();
 
 void SwitcherData::Start()
 {
+	if (obsIsShuttingDown) {
+		return;
+	}
+
 	if (!(th && th->isRunning())) {
 		RunIntervalResetSteps();
 		ResetMacros();
@@ -459,12 +465,13 @@ void SwitcherData::Stop()
 		SetMacroAbortWait(true);
 		GetMacroWaitCV().notify_all();
 		GetMacroTransitionCV().notify_all();
-		StopAllMacros();
+		SignalStopAllMacros();
 		StopAndClearAllActionQueues();
 		CloseAllInputDialogs();
 		th->wait();
 		delete th;
 		th = nullptr;
+		WaitForAllMacros();
 		RunStopSteps();
 	}
 
@@ -588,10 +595,13 @@ static void handleShutdown()
 		return;
 	}
 	switcher->obsIsShuttingDown = true;
+	// Nothing may run once obs_shutdown() starts freeing sources and audio
+	switcher->Stop();
 	if (ShutdownCheckIsNecessary()) {
-		switcher->Stop();
+		blog(LOG_INFO, "running shutdown macros");
 		CheckMacros();
 		RunMacros();
+		WaitForAllMacros();
 
 		// Unfortunately this will not work as OBS will now allow saving
 		// the scene collection data at this point, So any OBS specific
@@ -718,19 +728,54 @@ static void LoadPlugins()
 	}
 }
 
+static bool settingsPasswordIsCorrect(QWidget *parent)
+{
+	bool ok;
+	QString input = QInputDialog::getText(
+		parent,
+		obs_module_text(
+			"AdvSceneSwitcher.generalTab.generalBehavior.settingsLock.title"),
+		obs_module_text(
+			"AdvSceneSwitcher.generalTab.generalBehavior.settingsLock.passwordLabel"),
+		QLineEdit::Password, QString(), &ok);
+
+	if (!ok) {
+		return false;
+	}
+
+	if (input.toStdString() == switcher->settingsLockPassword) {
+		return true;
+	}
+
+	QMessageBox::warning(
+		parent,
+		obs_module_text(
+			"AdvSceneSwitcher.generalTab.generalBehavior.settingsLock.title"),
+		obs_module_text(
+			"AdvSceneSwitcher.generalTab.generalBehavior.settingsLock.wrongPassword"));
+	return false;
+}
+
 void OpenSettingsWindow()
 {
 	if (switcher->settingsWindowOpened) {
 		AdvSceneSwitcher::window->show();
 		AdvSceneSwitcher::window->raise();
 		AdvSceneSwitcher::window->activateWindow();
-	} else {
-		AdvSceneSwitcher::window =
-			new AdvSceneSwitcher(static_cast<QMainWindow *>(
-				obs_frontend_get_main_window()));
-		AdvSceneSwitcher::window->setAttribute(Qt::WA_DeleteOnClose);
-		AdvSceneSwitcher::window->show();
+		return;
 	}
+
+	auto parent =
+		static_cast<QMainWindow *>(obs_frontend_get_main_window());
+	if (switcher->settingsLockEnabled &&
+	    !switcher->settingsLockPassword.empty() &&
+	    !settingsPasswordIsCorrect(parent)) {
+		return;
+	}
+
+	AdvSceneSwitcher::window = new AdvSceneSwitcher(parent);
+	AdvSceneSwitcher::window->setAttribute(Qt::WA_DeleteOnClose);
+	AdvSceneSwitcher::window->show();
 }
 
 void AdvSceneSwitcher::HighlightMacroSettingsButton(bool enable)

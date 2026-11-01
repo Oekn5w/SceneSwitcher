@@ -3,10 +3,12 @@
 #include "item-selection-helpers.hpp"
 #include "resizing-text-edit.hpp"
 
+#include <condition_variable>
 #include <mutex>
 #include <obs-data.h>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <QStringList>
 
 namespace advss {
@@ -43,6 +45,11 @@ public:
 	std::optional<uint64_t> GetSecondsSinceLastUse() const;
 	std::optional<uint64_t> GetSecondsSinceLastChange() const;
 	void MarkAsUsed() const;
+	EXPORT std::condition_variable &GetCV() { return _cv; }
+	EXPORT std::unique_lock<std::mutex> GetCVLock()
+	{
+		return std::unique_lock<std::mutex>(_cvMutex);
+	}
 
 private:
 	SaveAction _saveAction = SaveAction::DONT_SAVE;
@@ -53,6 +60,8 @@ private:
 	mutable std::chrono::high_resolution_clock::time_point _lastUsed;
 	mutable std::chrono::high_resolution_clock::time_point _lastChanged;
 	mutable std::mutex _mutex;
+	std::mutex _cvMutex;
+	std::condition_variable _cv;
 
 	void UpdateLastUsed() const;
 
@@ -107,6 +116,10 @@ signals:
 	void Add(const QString &);
 	void Remove(const QString &);
 };
+
+using VariableContext = std::unordered_map<std::string, std::string>;
+VariableContext CreateVariableContext();
+void SetActiveVariableContext(VariableContext *context);
 
 std::deque<std::shared_ptr<Item>> &GetVariables();
 EXPORT Variable *GetVariableByName(const std::string &name);

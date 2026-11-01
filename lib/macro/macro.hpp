@@ -1,21 +1,20 @@
 #pragma once
+
 #include "macro-action.hpp"
 #include "macro-condition.hpp"
 #include "macro-dock-settings.hpp"
-#include "macro-helpers.hpp"
 #include "macro-input.hpp"
-#include "macro-ref.hpp"
-#include "variable-string.hpp"
 #include "temp-variable.hpp"
 
-#include <future>
-#include <string>
-#include <deque>
-#include <memory>
-#include <map>
-#include <thread>
 #include <obs.hpp>
-#include <obs-module-helper.hpp>
+
+#include <QList>
+
+#include <deque>
+#include <future>
+#include <memory>
+#include <string>
+#include <thread>
 
 namespace advss {
 
@@ -61,6 +60,7 @@ public:
 	PauseStateSaveBehavior GetPauseStateSaveBehavior() const;
 
 	void Stop();
+	void SignalStop();
 	bool GetStop() const { return _stop; }
 	void ResetTimers();
 
@@ -121,7 +121,10 @@ public:
 				       std::shared_ptr<Macro> item);
 	static void PrepareMoveToGroup(std::shared_ptr<Macro> group,
 				       std::shared_ptr<Macro> item);
+	static void
+	RestoreGroupHierarchy(const std::deque<std::shared_ptr<Macro>> &);
 	bool IsGroup() const { return _isGroup; }
+	// Number of all macros and groups nested within this group
 	uint32_t GroupSize() const { return _groupSize; }
 	void ResetGroupSize() { _groupSize = 0; }
 	bool IsSubitem() const { return !_parent.expired(); }
@@ -129,6 +132,10 @@ public:
 	bool IsCollapsed() const { return _isCollapsed; }
 	void SetParent(std::shared_ptr<Macro> m) { _parent = m; }
 	std::shared_ptr<Macro> Parent() const;
+
+	static std::shared_ptr<Macro> CreateNested();
+	void SetNestedParentMacro(Macro *parent);
+	Macro *GetNestedParentMacro() const { return _nestedParentMacro; }
 
 	// Saving and loading
 	bool Save(obs_data_t *obj, bool saveForCopy = false) const;
@@ -160,6 +167,7 @@ public:
 
 private:
 	void SetupHotkeys();
+	void LoadHotkeys();
 	void ClearHotkeys() const;
 	void SetHotkeysDesc() const;
 
@@ -186,7 +194,11 @@ private:
 	std::deque<std::shared_ptr<MacroAction>> _actions;
 	std::deque<std::shared_ptr<MacroAction>> _elseActions;
 
+	static void AddToGroupSizes(std::shared_ptr<Macro> group, int count);
+
 	std::weak_ptr<Macro> _parent;
+	Macro *_nestedParentMacro = nullptr;
+	bool _isNested = false;
 	uint32_t _groupSize = 0;
 	bool _isGroup = false;
 	bool _isCollapsed = false;
@@ -209,6 +221,10 @@ private:
 	obs_hotkey_id _pauseHotkey = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id _unpauseHotkey = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id _togglePauseHotkey = OBS_INVALID_HOTKEY_ID;
+	bool _hotkeyLoadPending = false;
+	OBSDataArrayAutoRelease _pauseHotkeyData;
+	OBSDataArrayAutoRelease _unpauseHotkeyData;
+	OBSDataArrayAutoRelease _togglePauseHotkeyData;
 
 	ActionTriggerMode _actionTriggerMode =
 		ActionTriggerMode::MACRO_RESULT_CHANGED;
@@ -224,12 +240,7 @@ private:
 	MacroDockSettings _dockSettings;
 };
 
-void LoadMacros(obs_data_t *obj);
-void SaveMacros(obs_data_t *obj);
-bool CheckMacros();
-bool RunMacros();
-void StopAllMacros();
-void InvalidateMacroTempVarValues();
+void WaitForAllMacros();
 std::shared_ptr<Macro> GetMacroWithInvalidConditionInterval();
 
 } // namespace advss

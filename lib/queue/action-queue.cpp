@@ -3,6 +3,9 @@
 #include "plugin-state-helpers.hpp"
 #include "ui-helpers.hpp"
 
+#include <QGridLayout>
+#include <QHBoxLayout>
+
 namespace advss {
 
 static std::deque<std::shared_ptr<Item>> queues;
@@ -42,6 +45,7 @@ void ActionQueue::Save(obs_data_t *obj) const
 	obs_data_set_string(obj, "name", _name.c_str());
 	obs_data_set_bool(obj, "runOnStartup", _runOnStartup);
 	obs_data_set_bool(obj, "resolveVariablesOnAdd", _resolveVariablesOnAdd);
+	obs_data_set_bool(obj, "cloneVariableContext", _cloneVariableContext);
 }
 
 void ActionQueue::Load(obs_data_t *obj)
@@ -51,6 +55,7 @@ void ActionQueue::Load(obs_data_t *obj)
 	_runOnStartup = obs_data_get_bool(obj, "runOnStartup");
 	_resolveVariablesOnAdd =
 		obs_data_get_bool(obj, "resolveVariablesOnAdd");
+	_cloneVariableContext = obs_data_get_bool(obj, "cloneVariableContext");
 
 	if (_runOnStartup) {
 		Start();
@@ -111,9 +116,17 @@ void ActionQueue::Add(const std::shared_ptr<MacroAction> &action)
 		copy->PostLoad();
 		RunAndClearPostLoadSteps();
 		copy->ResolveVariablesToFixedValues();
-		_actions.emplace_back(copy);
+		_actions.push_back({copy, {}});
+	} else if (_cloneVariableContext) {
+		auto copy = action->Copy();
+		OBSDataAutoRelease data = obs_data_create();
+		action->Save(data);
+		copy->Load(data);
+		copy->PostLoad();
+		RunAndClearPostLoadSteps();
+		_actions.push_back({copy, CreateVariableContext()});
 	} else {
-		_actions.emplace_back(action);
+		_actions.push_back({action, {}});
 	}
 	_cv.notify_all();
 }
@@ -140,7 +153,7 @@ size_t ActionQueue::Size()
 
 void ActionQueue::RunActions()
 {
-	std::shared_ptr<MacroAction> action;
+	QueueEntry entry;
 	while (true) {
 		{ // Grab next action to run
 			std::unique_lock<std::mutex> lock(_mutex);
@@ -153,20 +166,25 @@ void ActionQueue::RunActions()
 			if (_stop) {
 				return;
 			}
-			action = _actions.front();
+			entry = _actions.front();
 			_actions.pop_front();
 		}
 
-		if (!action) {
+		if (!entry.action) {
 			continue;
 		}
 
 		if (ActionLoggingEnabled()) {
 			blog(LOG_INFO, "Performing action '%s' in queue '%s'",
-			     action->GetId().c_str(), _name.c_str());
-			action->LogAction();
+			     entry.action->GetId().c_str(), _name.c_str());
+			entry.action->LogAction();
 		}
-		action->PerformAction();
+
+		if (entry.context) {
+			SetActiveVariableContext(&*entry.context);
+		}
+		entry.action->PerformAction();
+		SetActiveVariableContext(nullptr);
 	}
 }
 
@@ -184,6 +202,7 @@ ActionQueueSettingsDialog::ActionQueueSettingsDialog(QWidget *parent,
 		  obs_module_text("AdvSceneSwitcher.actionQueues.clear"))),
 	  _runOnStartup(new QCheckBox()),
 	  _resolveVariablesOnAdd(new QCheckBox()),
+	  _cloneVariableContext(new QCheckBox()),
 	  _queue(settings)
 {
 	QWidget::connect(_startStopToggle, SIGNAL(clicked()), this,
@@ -192,6 +211,7 @@ ActionQueueSettingsDialog::ActionQueueSettingsDialog(QWidget *parent,
 
 	_runOnStartup->setChecked(settings._runOnStartup);
 	_resolveVariablesOnAdd->setChecked(settings._resolveVariablesOnAdd);
+	_cloneVariableContext->setChecked(settings._cloneVariableContext);
 	UpdateLabels();
 
 	auto layout = new QGridLayout();
@@ -220,6 +240,14 @@ ActionQueueSettingsDialog::ActionQueueSettingsDialog(QWidget *parent,
 	layout->addWidget(_resolveVariablesOnAdd, row, 1);
 	_resolveVariablesOnAdd->setToolTip(obs_module_text(
 		"AdvSceneSwitcher.actionQueues.resolveVariablesOnAdd"));
+	++row;
+	layout->addWidget(
+		new QLabel(obs_module_text(
+			"AdvSceneSwitcher.actionQueues.cloneVariableContext")),
+		row, 0);
+	layout->addWidget(_cloneVariableContext, row, 1);
+	_cloneVariableContext->setToolTip(obs_module_text(
+		"AdvSceneSwitcher.actionQueues.cloneVariableContext.tooltip"));
 	++row;
 	layout->addWidget(_queueRunStatus, row, 0);
 	layout->addWidget(_startStopToggle, row, 1);
@@ -250,6 +278,8 @@ bool ActionQueueSettingsDialog::AskForSettings(QWidget *parent,
 	settings._runOnStartup = dialog._runOnStartup->isChecked();
 	settings._resolveVariablesOnAdd =
 		dialog._resolveVariablesOnAdd->isChecked();
+	settings._cloneVariableContext =
+		dialog._cloneVariableContext->isChecked();
 	return true;
 }
 
@@ -390,11 +420,10 @@ static bool queueWithNameExists(const std::string &name)
 	return !GetWeakActionQueueByName(name).expired();
 }
 
-static void signalImportedQueues(void *varsPtr)
+static void
+signalImportedQueues(const std::vector<std::shared_ptr<Item>> &queues)
 {
-	auto queues = std::unique_ptr<std::vector<std::shared_ptr<Item>>>(
-		static_cast<std::vector<std::shared_ptr<Item>> *>(varsPtr));
-	for (const auto &queue : *queues) {
+	for (const auto &queue : queues) {
 		ActionQueueSignalManager::Instance()->Add(
 			QString::fromStdString(queue->Name()));
 	}
@@ -406,7 +435,7 @@ void ImportQueues(obs_data_t *data)
 		obs_data_get_array(data, "actionQueues");
 	size_t count = obs_data_array_count(array);
 
-	auto importedQueues = new std::vector<std::shared_ptr<Item>>;
+	std::vector<std::shared_ptr<Item>> importedQueues;
 
 	for (size_t i = 0; i < count; i++) {
 		OBSDataAutoRelease arrayElement = obs_data_array_item(array, i);
@@ -416,10 +445,11 @@ void ImportQueues(obs_data_t *data)
 			continue;
 		}
 		queues.emplace_back(queue);
-		importedQueues->emplace_back(queue);
+		importedQueues.emplace_back(queue);
 	}
 
-	QueueUITask(signalImportedQueues, importedQueues);
+	QueueUITask(
+		[importedQueues]() { signalImportedQueues(importedQueues); });
 }
 
 std::weak_ptr<ActionQueue> GetWeakActionQueueByName(const std::string &name)

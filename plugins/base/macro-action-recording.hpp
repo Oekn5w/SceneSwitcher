@@ -1,6 +1,7 @@
 #pragma once
 #include "macro-action-edit.hpp"
 #include "file-selection.hpp"
+#include "help-icon.hpp"
 #include "variable-line-edit.hpp"
 
 #include <QDir>
@@ -64,19 +65,19 @@ private slots:
 	void FormatStringChanged();
 	void ChapterNameChanged();
 
-protected:
-	QComboBox *_actions;
-	QLabel *_pauseHint;
-	QLabel *_splitHint;
-	FileSelection *_recordFolder;
-	VariableLineEdit *_recordFileFormat;
-	VariableLineEdit *_chapterName;
-	std::shared_ptr<MacroActionRecord> _entryData;
-
 private:
 	void SetWidgetVisibility();
 
+	QComboBox *_actions;
+	HelpIcon *_pauseHint;
+	HelpIcon *_splitHint;
+	FileSelection *_recordFolder;
+	VariableLineEdit *_recordFileFormat;
+	HelpIcon *_outputNotActiveHelp;
+	VariableLineEdit *_chapterName;
+	std::shared_ptr<MacroActionRecord> _entryData;
 	QHBoxLayout *_mainLayout;
+
 	bool _loading = true;
 };
 

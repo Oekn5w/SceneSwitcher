@@ -1,12 +1,18 @@
 #include "ui-helpers.hpp"
+
 #include "advanced-scene-switcher.hpp"
 #include "non-modal-dialog.hpp"
 #include "obs-module-helper.hpp"
 #include "plugin-state-helpers.hpp"
 
 #include <obs-frontend-api.h>
+
+#include <QAbstractButton>
+#include <QComboBox>
+#include <QCursor>
 #include <QGraphicsColorizeEffect>
 #include <QListView>
+#include <QListWidget>
 #include <QMainWindow>
 #include <QPropertyAnimation>
 #include <QScrollBar>
@@ -178,9 +184,9 @@ std::string GetThemeTypeName()
 #endif
 }
 
-void QueueUITask(void (*task)(void *param), void *param)
+void QueueUITaskRaw(void (*task)(void *param), void *param, bool wait)
 {
-	obs_queue_task(OBS_TASK_UI, task, param, false);
+	obs_queue_task(OBS_TASK_UI, task, param, wait);
 }
 
 bool IsCursorInWidgetArea(QWidget *widget)

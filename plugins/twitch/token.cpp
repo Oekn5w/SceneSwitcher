@@ -1,16 +1,20 @@
 #include "token.hpp"
+
+#include "log-helper.hpp"
 #include "twitch-helpers.hpp"
+
+#include <obs-module-helper.hpp>
+
+#include <QDesktopServices>
+#include <QGroupBox>
+#include <QScrollArea>
+#include <QUrl>
 
 #include <help-icon.hpp>
 #include <layout-helpers.hpp>
 #include <log-helper.hpp>
 #include <macro-export-extensions.hpp>
-#include <obs-module-helper.hpp>
 #include <plugin-state-helpers.hpp>
-#include <QDesktopServices>
-#include <QGroupBox>
-#include <QScrollArea>
-#include <QUrl>
 #include <ui-helpers.hpp>
 
 namespace advss {
@@ -229,7 +233,12 @@ void TwitchToken::Load(obs_data_t *obj)
 {
 	Item::Load(obj);
 	_token = obs_data_get_string(obj, "token");
-	_userID = obs_data_get_string(obj, "userID");
+	if (obs_data_has_user_value(obj, "userID") &&
+	    *obs_data_get_string(obj, "userID") != '\0') {
+		_userID = obs_data_get_string(obj, "userID");
+	} else {
+		_userID = {};
+	}
 	obs_data_set_default_bool(obj, "validateEventSubTimestamps", true);
 	_validateEventSubTimestamps =
 		obs_data_get_bool(obj, "validateEventSubTimestamps");
@@ -251,7 +260,7 @@ void TwitchToken::Save(obs_data_t *obj) const
 {
 	Item::Save(obj);
 	obs_data_set_string(obj, "token", _token.c_str());
-	if (_userID) {
+	if (_userID && !_userID->empty()) {
 		obs_data_set_string(obj, "userID", _userID->c_str());
 	}
 	obs_data_set_bool(obj, "validateEventSubTimestamps",
@@ -306,7 +315,7 @@ bool TwitchToken::AnyOptionIsEnabled(
 	return false;
 }
 
-void TwitchToken::SetToken(const std::string &value)
+bool TwitchToken::SetToken(const std::string &value)
 {
 	_token = value;
 	auto res =
@@ -314,21 +323,34 @@ void TwitchToken::SetToken(const std::string &value)
 	if (res.status != 200) {
 		blog(LOG_WARNING, "failed to get Twitch user id from token!");
 		_userID = {};
-		return;
+		return false;
 	}
 
+	bool gotUserID = false;
 	OBSDataArrayAutoRelease array = obs_data_get_array(res.data, "data");
 	size_t count = obs_data_array_count(array);
 	for (size_t i = 0; i < count; i++) {
 		OBSDataAutoRelease arrayObj = obs_data_array_item(array, i);
-		_userID = obs_data_get_string(arrayObj, "id");
+		std::string id = obs_data_get_string(arrayObj, "id");
+		if (id.empty()) {
+			blog(LOG_WARNING,
+			     "Twitch /helix/users response did not contain a user id!");
+			continue;
+		}
+		_userID = id;
 		_name = obs_data_get_string(arrayObj, "display_name");
+		gotUserID = true;
+	}
+
+	if (!gotUserID) {
+		return false;
 	}
 
 	// Trigger resubscribes with new token
 	if (_eventSub) {
 		_eventSub->ClearActiveSubscriptions();
 	}
+	return true;
 }
 
 std::optional<std::string> TwitchToken::GetToken() const
@@ -384,12 +406,16 @@ bool TwitchToken::IsValid(bool forceUpdate) const
 			return false;
 		}
 
-		if (_userID && _userID != id) {
+		if (_userID && !_userID->empty() && _userID != id) {
 			blog(LOG_INFO,
 			     "Twitch token %s does not match expected user (got %s, expected %s)!",
 			     _name.c_str(), id, _userID->c_str());
 			_lastValidityCheckResult = false;
 			return false;
+		}
+
+		if (!_userID || _userID->empty()) {
+			_userID = id;
 		}
 
 		_lastValidityCheckResult = true;
@@ -652,9 +678,6 @@ TwitchTokenSettingsDialog::TwitchTokenSettingsDialog(
 	}
 
 	_validateTimestamps->setChecked(settings._validateEventSubTimestamps);
-#ifndef VERIFY_TIMESTAMPS
-	_validateTimestamps->hide();
-#endif
 	_warnIfInvalid->setChecked(settings._warnIfInvalid);
 
 	_currentToken = settings;
@@ -818,9 +841,9 @@ void TwitchTokenSettingsDialog::GotToken(const std::optional<QString> &value)
 		return;
 	}
 
-	_currentToken.SetToken(value.value().toStdString());
+	bool success = _currentToken.SetToken(value.value().toStdString());
 	auto name = QString::fromStdString(_currentToken._name);
-	if (name.isEmpty()) {
+	if (!success || name.isEmpty()) {
 		_tokenStatus->setText(obs_module_text(
 			"AdvSceneSwitcher.twitchToken.request.fail"));
 		_name->setText("");

@@ -1,8 +1,11 @@
 #include "macro-action-macro.hpp"
+
+#include "condition-logic.hpp"
 #include "help-icon.hpp"
 #include "layout-helpers.hpp"
-#include "macro.hpp"
 #include "macro-action-factory.hpp"
+#include "macro-helpers.hpp"
+#include "macro.hpp"
 
 #include <chrono>
 
@@ -14,6 +17,13 @@ bool MacroActionMacro::_registered = MacroActionFactory::Register(
 	MacroActionMacro::id,
 	{MacroActionMacro::Create, MacroActionMacroEdit::Create,
 	 "AdvSceneSwitcher.action.macro"});
+
+MacroActionMacro::MacroActionMacro(Macro *m)
+	: MacroAction(m),
+	  MacroRefAction(m),
+	  _nestedMacro(Macro::CreateNested())
+{
+}
 
 void MacroActionMacro::AdjustActionState(Macro *macro) const
 {
@@ -263,6 +273,7 @@ bool MacroActionMacro::Load(obs_data_t *obj)
 	if (obs_data_has_user_value(obj, "nestedMacro")) {
 		OBSDataAutoRelease nestedMacroData =
 			obs_data_get_obj(obj, "nestedMacro");
+		_nestedMacro = Macro::CreateNested();
 		_nestedMacro->Load(nestedMacroData);
 	}
 
@@ -277,6 +288,7 @@ bool MacroActionMacro::PostLoad()
 	MacroAction::PostLoad();
 	_runOptions.macro.PostLoad();
 	_nestedMacro->PostLoad();
+	_nestedMacro->SetNestedParentMacro(GetMacro());
 	return true;
 }
 
@@ -298,7 +310,7 @@ std::shared_ptr<MacroAction> MacroActionMacro::Copy() const
 	OBSDataAutoRelease data = obs_data_create();
 	_nestedMacro->Save(data);
 
-	copy->_nestedMacro = std::make_shared<Macro>();
+	copy->_nestedMacro = Macro::CreateNested();
 	copy->_nestedMacro->Load(data);
 	copy->_nestedMacro->PostLoad();
 
@@ -309,6 +321,15 @@ void MacroActionMacro::ResolveVariablesToFixedValues()
 {
 	_actionIndex.ResolveVariables();
 	_label.ResolveVariables();
+
+	if (_action == Action::NESTED_MACRO) {
+		for (auto &action : _nestedMacro->Actions()) {
+			action->ResolveVariablesToFixedValues();
+		}
+		for (auto &action : _nestedMacro->ElseActions()) {
+			action->ResolveVariablesToFixedValues();
+		}
+	}
 }
 
 static void runActionsHelper(Macro *macro, bool runElseActions, bool setInputs,

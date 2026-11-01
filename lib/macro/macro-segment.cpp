@@ -1,4 +1,5 @@
 #include "macro-segment.hpp"
+
 #include "macro.hpp"
 #include "mouse-wheel-guard.hpp"
 #include "path-helpers.hpp"
@@ -8,10 +9,13 @@
 
 #include <QApplication>
 #include <QEvent>
+#include <QFrame>
 #include <QGraphicsOpacityEffect>
 #include <QLabel>
 #include <QMouseEvent>
+#include <QPushButton>
 #include <QScrollBar>
+#include <QVBoxLayout>
 
 namespace advss {
 
@@ -103,9 +107,7 @@ bool MacroSegment::Save(obs_data_t *obj) const
 	for (const auto &mapping : _varMappings) {
 		OBSDataAutoRelease item = obs_data_create();
 		mapping.tempVar.Save(item, GetMacro(), "tempVar");
-		obs_data_set_string(
-			item, "variable",
-			GetWeakVariableName(mapping.variable).c_str());
+		mapping.variable.Save(item, "variable");
 		obs_data_array_push_back(mappingsArray, item);
 	}
 	obs_data_set_array(data, "varMappings", mappingsArray);
@@ -143,8 +145,7 @@ bool MacroSegment::Load(obs_data_t *obj)
 	for (size_t i = 0; i < count; i++) {
 		OBSDataAutoRelease item = obs_data_array_item(mappingsArray, i);
 		VarMapping mapping;
-		mapping.variable = GetWeakVariableByName(
-			obs_data_get_string(item, "variable"));
+		mapping.variable.Load(item, "variable");
 		_varMappings.push_back(std::move(mapping));
 		_varMappings.back().tempVar.Load(item, GetMacro(), "tempVar");
 	}

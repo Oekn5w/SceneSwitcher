@@ -165,12 +165,20 @@ MacroActionRecordEdit::MacroActionRecordEdit(
 	QWidget *parent, std::shared_ptr<MacroActionRecord> entryData)
 	: QWidget(parent),
 	  _actions(new QComboBox()),
-	  _pauseHint(new QLabel(obs_module_text(
-		  "AdvSceneSwitcher.action.recording.pause.hint"))),
-	  _splitHint(new QLabel(obs_module_text(
-		  "AdvSceneSwitcher.action.recording.split.hint"))),
+	  _pauseHint(new HelpIcon(
+		  obs_module_text(
+			  "AdvSceneSwitcher.action.recording.pause.hint"),
+		  this)),
+	  _splitHint(new HelpIcon(
+		  obs_module_text(
+			  "AdvSceneSwitcher.action.recording.split.hint"),
+		  this)),
 	  _recordFolder(new FileSelection(FileSelection::Type::FOLDER, this)),
 	  _recordFileFormat(new VariableLineEdit(this)),
+	  _outputNotActiveHelp(new HelpIcon(
+		  obs_module_text(
+			  "AdvSceneSwitcher.action.recording.outputNotActive.hint"),
+		  this)),
 	  _chapterName(new VariableLineEdit(this))
 {
 	populateActionSelection(_actions);
@@ -184,16 +192,18 @@ MacroActionRecordEdit::MacroActionRecordEdit(
 	QWidget::connect(_chapterName, SIGNAL(editingFinished()), this,
 			 SLOT(ChapterNameChanged()));
 
-	auto mainLayout = new QHBoxLayout;
-	PlaceWidgets(obs_module_text("AdvSceneSwitcher.action.recording.entry"),
-		     mainLayout,
-		     {{"{{actions}}", _actions},
-		      {"{{pauseHint}}", _pauseHint},
-		      {"{{splitHint}}", _splitHint},
-		      {"{{recordFolder}}", _recordFolder},
-		      {"{{recordFileFormat}}", _recordFileFormat},
-		      {"{{chapterName}}", _chapterName}});
-	setLayout(mainLayout);
+	_mainLayout = new QHBoxLayout;
+	PlaceWidgets(
+		obs_module_text("AdvSceneSwitcher.action.recording.layout"),
+		_mainLayout,
+		{{"{{actions}}", _actions},
+		 {"{{pauseHint}}", _pauseHint},
+		 {"{{splitHint}}", _splitHint},
+		 {"{{recordFolder}}", _recordFolder},
+		 {"{{recordFileFormat}}", _recordFileFormat},
+		 {"{{outputNotActiveHelp}}", _outputNotActiveHelp},
+		 {"{{chapterName}}", _chapterName}});
+	setLayout(_mainLayout);
 
 	_entryData = entryData;
 	UpdateEntryData();
@@ -245,8 +255,20 @@ void MacroActionRecordEdit::SetWidgetVisibility()
 				  MacroActionRecord::Action::FOLDER);
 	_recordFileFormat->setVisible(_entryData->_action ==
 				      MacroActionRecord::Action::FILE_FORMAT);
+	_outputNotActiveHelp->setVisible(
+		_entryData->_action == MacroActionRecord::Action::FOLDER ||
+		_entryData->_action == MacroActionRecord::Action::FILE_FORMAT);
 	_chapterName->setVisible(_entryData->_action ==
 				 MacroActionRecord::Action::ADD_CHAPTER);
+	const bool hasExtraWidget =
+		_entryData->_action == MacroActionRecord::Action::FOLDER ||
+		_entryData->_action == MacroActionRecord::Action::FILE_FORMAT ||
+		_entryData->_action == MacroActionRecord::Action::ADD_CHAPTER;
+	if (hasExtraWidget) {
+		RemoveStretchIfPresent(_mainLayout);
+	} else {
+		AddStretchIfNecessary(_mainLayout);
+	}
 }
 
 void MacroActionRecordEdit::ActionChanged(int value)

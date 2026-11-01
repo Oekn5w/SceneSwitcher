@@ -1,9 +1,11 @@
 #include "temp-variable.hpp"
-#include "obs-module-helper.hpp"
-#include "macro.hpp"
+
 #include "macro-action-macro.hpp"
 #include "macro-edit.hpp"
+#include "macro-helpers.hpp"
 #include "macro-segment.hpp"
+#include "macro.hpp"
+#include "obs-module-helper.hpp"
 #include "plugin-state-helpers.hpp"
 #include "sync-helpers.hpp"
 #include "ui-helpers.hpp"
@@ -732,12 +734,10 @@ TempVarSignalManager *TempVarSignalManager::Instance()
 void NotifyUIAboutTempVarChange(MacroSegment *segment)
 {
 	IncrementTempVarInUseGeneration();
-	QueueUITask(
-		[](void *segment) {
-			TempVarSignalManager::Instance()->SegmentTempVarsChanged(
-				(MacroSegment *)segment);
-		},
-		segment);
+	QueueUITask([segment]() {
+		TempVarSignalManager::Instance()->SegmentTempVarsChanged(
+			segment);
+	});
 }
 
 TempVarOutputMappingsWidget::TempVarOutputMappingsWidget(QWidget *parent)

@@ -1,5 +1,16 @@
 #include "platform-funcs.hpp"
+
 #include "log-helper.hpp"
+#include "obs-module-helper.hpp"
+#include "plugin-state-helpers.hpp"
+#include "ui-helpers.hpp"
+
+#include <obs-frontend-api.h>
+#include <QCheckBox>
+#include <QFontDatabase>
+#include <QGridLayout>
+#include <QLineEdit>
+#include <QMessageBox>
 
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
@@ -292,6 +303,30 @@ std::vector<WindowInfo> GetWindows(const WindowQueryOptions &options)
 
 		// windowClass and text not implemented on Linux
 		result.emplace_back(std::move(info));
+	}
+
+	// When KWin compat is active, native Wayland windows are not tracked by
+	// X11 and therefore do not appear in the list above. Merge in any window
+	// reported by KWin that is not already present (matched by title) so that
+	// title and focus conditions work for native Wayland windows.
+	if (KWin) {
+		for (const auto &[pid, title] :
+		     FocusNotifier::getWindowList()) {
+			bool found = false;
+			for (const auto &info : result) {
+				if (info.title == title) {
+					found = true;
+					break;
+				}
+			}
+			if (!found) {
+				WindowInfo waylandWindow;
+				waylandWindow.title = title;
+				waylandWindow.focused =
+					(title == foregroundTitle);
+				result.emplace_back(std::move(waylandWindow));
+			}
+		}
 	}
 
 	return result;
@@ -604,27 +639,108 @@ int ignoreXerror(Display *d, XErrorEvent *e)
 	return 0;
 }
 
+static bool warnAboutWindowDetectionUnavailable = true;
+
+static bool setupWindowDetectionWarningPersistence = []() {
+	AddSaveStep([](obs_data_t *obj) {
+		obs_data_set_bool(obj, "warnAboutFlatpakWindowDetection",
+				  warnAboutWindowDetectionUnavailable);
+	});
+	AddLoadStep([](obs_data_t *obj) {
+		obs_data_set_default_bool(
+			obj, "warnAboutFlatpakWindowDetection", true);
+		warnAboutWindowDetectionUnavailable = obs_data_get_bool(
+			obj, "warnAboutFlatpakWindowDetection");
+	});
+	return true;
+}();
+
+static void showWindowDetectionWarning(const char *messageId,
+				       const char *command)
+{
+	auto mainWindow =
+		static_cast<QWidget *>(obs_frontend_get_main_window());
+	QMessageBox msgBox(QMessageBox::Warning,
+			   obs_module_text("AdvSceneSwitcher.pluginName"),
+			   obs_module_text(messageId), QMessageBox::Ok,
+			   mainWindow);
+
+	if (command) {
+		auto commandLineEdit = new QLineEdit(command, &msgBox);
+		commandLineEdit->setReadOnly(true);
+		commandLineEdit->setFont(
+			QFontDatabase::systemFont(QFontDatabase::FixedFont));
+		commandLineEdit->setCursorPosition(0);
+		auto layout = qobject_cast<QGridLayout *>(msgBox.layout());
+		if (layout) {
+			layout->addWidget(commandLineEdit, layout->rowCount(),
+					  0, 1, layout->columnCount());
+		}
+	}
+
+	auto checkbox = new QCheckBox(obs_module_text(
+		"AdvSceneSwitcher.flatpakWindowDetectionWarning.doNotShowAgain"));
+	msgBox.setCheckBox(checkbox);
+	msgBox.exec();
+	warnAboutWindowDetectionUnavailable = !checkbox->isChecked();
+}
+
+static void handleWindowDetectionUnavailable(bool hasX11)
+{
+	if (hasX11 || KWin) {
+		return;
+	}
+
+	if (!qEnvironmentVariableIsSet("FLATPAK_ID")) {
+		return;
+	}
+
+	const bool onKDE = qEnvironmentVariable("XDG_CURRENT_DESKTOP")
+				   .contains("KDE", Qt::CaseInsensitive);
+	const char *messageId =
+		onKDE ? "AdvSceneSwitcher.kwin.flatpakPermissionWarning"
+		      : "AdvSceneSwitcher.wayland.flatpakPermissionWarning";
+	const char *command =
+		onKDE ? "flatpak override --user --talk-name=org.kde.KWin com.obsproject.Studio"
+		      : nullptr;
+
+	blog(LOG_WARNING,
+	     "window detection unavailable: OBS Flatpak sandbox has no X11 "
+	     "access on this Wayland session and %s",
+	     onKDE ? "the KWin D-Bus compat call was blocked (missing "
+		     "'org.kde.KWin' talk-name permission)"
+		   : "no compatible native Wayland integration exists for "
+		     "this desktop");
+
+	AddFinishedLoadingStep([messageId, command]() {
+		if (!warnAboutWindowDetectionUnavailable) {
+			return;
+		}
+		showWindowDetectionWarning(messageId, command);
+	});
+}
+
 void PlatformInit()
 {
+	const bool kwinAvailable = isKWinAvailable();
+	KWin = kwinAvailable && registerKWinDBusListener(&notifier) &&
+	       startKWinScript(KWinScriptObjectPath);
+	if (KWin) {
+		blog(LOG_INFO, "using KWin compat");
+	} else {
+		blog(LOG_INFO, "not using KWin compat");
+	}
+
+	initProcps();
+	initProc2();
+
 	auto display = disp();
+	handleWindowDetectionUnavailable(display != nullptr);
 	if (!display) {
 		return;
 	}
 
-	KWin = isKWinAvailable();
-	if (!(KWin && startKWinScript(KWinScriptObjectPath) &&
-	      registerKWinDBusListener(&notifier))) {
-		// something bad happened while trying to initialize
-		// the KWin script/dbus so disable it
-		KWin = false;
-		blog(LOG_INFO, "not using KWin compat");
-	} else {
-		blog(LOG_INFO, "using KWin compat");
-	}
-
 	initXss();
-	initProcps();
-	initProc2();
 	XSetErrorHandler(ignoreXerror);
 }
 

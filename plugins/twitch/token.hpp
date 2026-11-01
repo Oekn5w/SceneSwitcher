@@ -48,7 +48,7 @@ public:
 	bool OptionIsActive(const TokenOption &option) const;
 	bool OptionIsEnabled(const TokenOption &option) const;
 	bool AnyOptionIsEnabled(const std::vector<TokenOption> &options) const;
-	void SetToken(const std::string &);
+	bool SetToken(const std::string &);
 	bool IsEmpty() const { return _token.empty(); }
 	std::optional<std::string> GetToken() const;
 	std::optional<std::string> GetUserID() const { return _userID; }
@@ -65,7 +65,7 @@ private:
 	mutable std::string _lastValidityCheckValue;
 	mutable bool _lastValidityCheckResult = false;
 	mutable std::chrono::system_clock::time_point _lastValidityCheckTime;
-	std::optional<std::string> _userID;
+	mutable std::optional<std::string> _userID;
 	std::set<TokenOption> _tokenOptions = TokenOption::GetAllTokenOptions();
 	std::shared_ptr<EventSub> _eventSub;
 	bool _validateEventSubTimestamps = false;

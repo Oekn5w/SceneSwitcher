@@ -1,8 +1,11 @@
 #include "chat-connection.hpp"
+
+#include "log-helper.hpp"
 #include "token.hpp"
 #include "twitch-helpers.hpp"
 
 #include <log-helper.hpp>
+#include <plugin-state-helpers.hpp>
 
 #undef DispatchMessage
 
@@ -338,6 +341,24 @@ static constexpr std::string_view defaultURL =
 
 std::map<TwitchChatConnection::ChatMapKey, std::weak_ptr<TwitchChatConnection>>
 	TwitchChatConnection::_chatMap = {};
+
+void TwitchChatConnection::DisconnectAll()
+{
+	for (auto &[key, weakConn] : _chatMap) {
+		auto conn = weakConn.lock();
+		if (conn) {
+			conn->Disconnect();
+		}
+	}
+}
+
+static bool setupChatConnectionSupport()
+{
+	AddStopStep(TwitchChatConnection::DisconnectAll);
+	return true;
+}
+
+static bool _chatSetup = setupChatConnectionSupport();
 
 TwitchChatConnection::TwitchChatConnection(const TwitchToken &token,
 					   const TwitchChannel &channel)

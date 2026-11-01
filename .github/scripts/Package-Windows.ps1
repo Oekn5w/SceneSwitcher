@@ -68,45 +68,68 @@ function Package {
 
     Remove-Item @RemoveArgs
 
-    # Build a staging directory with two subfolders:
-    #   recommended/ - new layout, extract to %ProgramData%\obs-studio\
-    #   legacy/      - old layout, extract to the OBS install directory
-    $ReleasePath  = "${ProjectRoot}/release/${Configuration}"
-    $StagingPath  = "${ProjectRoot}/release/zip-staging"
-    $NewBinPath   = "${ReleasePath}/${ProductName}/bin/64bit"
-    $NewDataPath  = "${ReleasePath}/${ProductName}/data"
+    $ReleasePath = "${ProjectRoot}/release/${Configuration}"
+    $PluginPath = "${ReleasePath}/${ProductName}"
+    $NewDataPath = "${PluginPath}/data"
+    $CIWindowsDir = "${ProjectRoot}/build-aux/CI/windows"
 
-    Remove-Item -Path $StagingPath -Recurse -Force -ErrorAction SilentlyContinue
-    New-Item -ItemType Directory -Force -Path $StagingPath | Out-Null
-    Copy-Item -Path "${ProjectRoot}/build-aux/CI/windows/README.txt" -Destination "${StagingPath}/README.txt"
-
-    if ( Test-Path -Path $NewBinPath ) {
-        $RecBinPath    = "${StagingPath}/recommended/${ProductName}/bin/64bit"
-        $LegacyBinPath = "${StagingPath}/legacy/obs-plugins/64bit"
-        New-Item -ItemType Directory -Force -Path $RecBinPath    | Out-Null
-        New-Item -ItemType Directory -Force -Path $LegacyBinPath | Out-Null
-        Copy-Item -Path "${NewBinPath}/*" -Destination $RecBinPath    -Recurse -Force
-        Copy-Item -Path "${NewBinPath}/*" -Destination $LegacyBinPath -Recurse -Force
-    }
-    if ( Test-Path -Path $NewDataPath ) {
-        $RecDataPath    = "${StagingPath}/recommended/${ProductName}/data"
-        $LegacyDataPath = "${StagingPath}/legacy/data/obs-plugins/${ProductName}"
-        New-Item -ItemType Directory -Force -Path $RecDataPath    | Out-Null
-        New-Item -ItemType Directory -Force -Path $LegacyDataPath | Out-Null
-        Copy-Item -Path "${NewDataPath}/*" -Destination $RecDataPath    -Recurse -Force
-        Copy-Item -Path "${NewDataPath}/*" -Destination $LegacyDataPath -Recurse -Force
+    # Binaries are in bin/64bit if built with ADVSS_WINDOWS_LEGACY_LAYOUT
+    $LegacyBinPath = "${PluginPath}/bin/64bit"
+    if ( Test-Path -Path $LegacyBinPath ) {
+        $BinItems = Get-ChildItem -Path $LegacyBinPath
+    } else {
+        $BinItems = Get-ChildItem -Path $PluginPath -Exclude 'data' -ErrorAction SilentlyContinue
     }
 
-    Log-Group "Archiving ${ProductName}..."
-    $CompressArgs = @{
-        Path = (Get-ChildItem -Path $StagingPath)
-        CompressionLevel = 'Optimal'
-        DestinationPath = "${ProjectRoot}/release/${OutputName}.zip"
-        Verbose = ($null -ne $Env:CI)
+    function Copy-PluginFiles {
+        param(
+            [string] $Destination,
+            [string] $BinDir,
+            [string] $DataDir
+        )
+
+        if ( $BinItems ) {
+            New-Item -ItemType Directory -Force -Path "${Destination}/${BinDir}" | Out-Null
+            $BinItems | Copy-Item -Destination "${Destination}/${BinDir}" -Recurse -Force
+        }
+        if ( Test-Path -Path $NewDataPath ) {
+            New-Item -ItemType Directory -Force -Path "${Destination}/${DataDir}" | Out-Null
+            Copy-Item -Path "${NewDataPath}/*" -Destination "${Destination}/${DataDir}" -Recurse -Force
+        }
     }
-    Compress-Archive -Force @CompressArgs
-    Remove-Item -Path $StagingPath -Recurse -Force
-    Log-Group
+
+    function New-PluginArchive {
+        param(
+            [string] $Suffix,
+            [string] $Readme,
+            [string] $BinDir,
+            [string] $DataDir
+        )
+
+        Log-Group "Archiving ${OutputName}${Suffix}.zip..."
+        $Staging = "${ProjectRoot}/release/zip-staging"
+        Remove-Item -Path $Staging -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force -Path $Staging | Out-Null
+        Copy-Item -Path "${CIWindowsDir}/${Readme}" -Destination "${Staging}/README.txt"
+        Copy-PluginFiles -Destination $Staging -BinDir $BinDir -DataDir $DataDir
+        Compress-Archive -Force -Path (Get-ChildItem -Path $Staging) `
+            -CompressionLevel Optimal `
+            -DestinationPath "${ProjectRoot}/release/${OutputName}${Suffix}.zip"
+        Remove-Item -Path $Staging -Recurse -Force
+        Log-Group
+    }
+
+    # OBS 33 and newer, extract to %ProgramData%\obs-studio\plugins\
+    New-PluginArchive -Suffix '' -Readme 'README.txt' `
+        -BinDir $ProductName -DataDir "${ProductName}/data"
+
+    # OBS 28 to 32, extract to %ProgramData%\obs-studio\plugins\
+    New-PluginArchive -Suffix '-obs32' -Readme 'README-obs32.txt' `
+        -BinDir "${ProductName}/bin/64bit" -DataDir "${ProductName}/data"
+
+    # OBS 32 and older, extract to the OBS installation directory
+    New-PluginArchive -Suffix '-portable-obs32' -Readme 'README-portable-obs32.txt' `
+        -BinDir 'obs-plugins/64bit' -DataDir "data/obs-plugins/${ProductName}"
 
     if ( ( $BuildInstaller ) ) {
         Log-Group "Packaging ${ProductName}..."
@@ -120,7 +143,10 @@ function Package {
         Push-Location -Stack BuildTemp
         Ensure-Location -Path "${ProjectRoot}/release"
         Remove-Item -Path Package -Recurse -Force -ErrorAction SilentlyContinue
-        Copy-Item -Path ${Configuration} -Destination Package -Recurse
+
+        # The installer places these files according to the detected layout
+        Copy-PluginFiles -Destination 'Package' -BinDir 'bin' -DataDir 'data'
+
         Invoke-External iscc ${IsccFile} /O"${ProjectRoot}/release" /F"${OutputName}-Installer"
         Remove-Item -Path Package -Recurse
         Pop-Location -Stack BuildTemp

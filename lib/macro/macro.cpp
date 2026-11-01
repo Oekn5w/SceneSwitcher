@@ -1,4 +1,6 @@
 #include "macro.hpp"
+
+#include "condition-logic.hpp"
 #include "macro-action-factory.hpp"
 #include "macro-condition-factory.hpp"
 #include "macro-helpers.hpp"
@@ -7,12 +9,15 @@
 #include "splitter-helpers.hpp"
 #include "sync-helpers.hpp"
 
+#include <obs-frontend-api.h>
+
+#include <QAction>
+#include <QMainWindow>
+
+#include <algorithm>
 #include <chrono>
 #include <limits>
 #undef max
-#include <obs-frontend-api.h>
-#include <QAction>
-#include <QMainWindow>
 #include <unordered_map>
 
 namespace advss {
@@ -58,11 +63,23 @@ Macro::CreateGroup(const std::string &name,
 {
 	auto group = std::make_shared<Macro>(name);
 	group->_registerHotkeys = false;
-	for (auto &c : children) {
-		c->SetParent(group);
-	}
 	group->_isGroup = true;
-	group->_groupSize = children.size();
+
+	if (!children.empty()) {
+		const auto parent = children.front()->Parent();
+		const bool haveSameParent = std::all_of(
+			children.begin(), children.end(),
+			[&parent](const std::shared_ptr<Macro> &child) {
+				return child->Parent() == parent;
+			});
+		if (haveSameParent) {
+			PrepareMoveToGroup(parent, group);
+		}
+	}
+
+	for (auto &child : children) {
+		PrepareMoveToGroup(group, child);
+	}
 	return group;
 }
 
@@ -74,11 +91,11 @@ void Macro::RemoveGroup(std::shared_ptr<Macro> group)
 		return;
 	}
 
-	auto size = group->GroupSize();
-	for (uint32_t i = 1; i <= size; i++) {
-		auto m = std::next(it, i);
-		(*m)->SetParent(nullptr);
+	const auto parent = group->Parent();
+	for (const auto &child : GetGroupChildren(group.get())) {
+		child->SetParent(parent);
 	}
+	AddToGroupSizes(parent, -1);
 
 	macros.erase(it);
 }
@@ -102,15 +119,72 @@ void Macro::PrepareMoveToGroup(std::shared_ptr<Macro> group,
 		return;
 	}
 
-	// Potentially remove from old group
-	auto oldGroup = item->Parent();
-	if (oldGroup) {
-		oldGroup->_groupSize--;
+	if (group &&
+	    (group == item || IsMacroInGroup(group.get(), item.get()))) {
+		blog(LOG_WARNING, "cannot move \"%s\" into itself",
+		     item->Name().c_str());
+		return;
 	}
 
+	const int count = 1 + (int)item->_groupSize;
+	AddToGroupSizes(item->Parent(), -count);
 	item->SetParent(group);
-	if (group) {
-		group->_groupSize++;
+	AddToGroupSizes(group, count);
+}
+
+void Macro::AddToGroupSizes(std::shared_ptr<Macro> group, int count)
+{
+	for (; group; group = group->Parent()) {
+		assert((int)group->_groupSize + count >= 0);
+		group->_groupSize += count;
+	}
+}
+
+void Macro::RestoreGroupHierarchy(
+	const std::deque<std::shared_ptr<Macro>> &macros)
+{
+	struct OpenGroup {
+		std::shared_ptr<Macro> group;
+		uint32_t remaining;
+	};
+	std::vector<OpenGroup> openGroups;
+
+	for (size_t i = 0; i < macros.size(); i++) {
+		const auto &macro = macros[i];
+		while (!openGroups.empty() &&
+		       openGroups.back().remaining == 0) {
+			openGroups.pop_back();
+		}
+
+		macro->SetParent(openGroups.empty() ? nullptr
+						    : openGroups.back().group);
+		for (auto &openGroup : openGroups) {
+			openGroup.remaining--;
+		}
+
+		if (!macro->IsGroup()) {
+			continue;
+		}
+
+		const auto maxSize = openGroups.empty()
+					     ? (uint32_t)(macros.size() - i - 1)
+					     : openGroups.back().remaining;
+		auto size = macro->_groupSize;
+		if (size > maxSize) {
+			blog(LOG_WARNING,
+			     "invalid group size detected for \"%s\" - "
+			     "reducing size from %u to %u",
+			     macro->Name().c_str(), size, maxSize);
+			size = maxSize;
+		}
+		openGroups.push_back({macro, size});
+	}
+
+	for (const auto &macro : macros) {
+		macro->_groupSize = 0;
+	}
+	for (const auto &macro : macros) {
+		AddToGroupSizes(macro->Parent(), 1);
 	}
 }
 
@@ -335,8 +409,7 @@ bool Macro::PerformActions(bool match, bool forceParallel, bool ignorePause)
 	}
 
 	_lastExecutionTime = std::chrono::high_resolution_clock::now();
-	auto group = _parent.lock();
-	if (group) {
+	for (auto group = _parent.lock(); group; group = group->Parent()) {
 		group->_lastExecutionTime = _lastExecutionTime;
 	}
 	if (_runCount != std::numeric_limits<int>::max()) {
@@ -550,6 +623,12 @@ void Macro::SetPauseStateSaveBehavior(PauseStateSaveBehavior behavior)
 Macro::PauseStateSaveBehavior Macro::GetPauseStateSaveBehavior() const
 {
 	return _pauseSaveBehavior;
+}
+
+void Macro::SignalStop()
+{
+	_stop = true;
+	GetMacroWaitCV().notify_all();
 }
 
 void Macro::Stop()
@@ -787,6 +866,19 @@ std::shared_ptr<Macro> Macro::Parent() const
 	return _parent.lock();
 }
 
+std::shared_ptr<Macro> Macro::CreateNested()
+{
+	auto macro = std::make_shared<Macro>();
+	macro->_isNested = true;
+	macro->_registerHotkeys = false;
+	return macro;
+}
+
+void Macro::SetNestedParentMacro(Macro *parent)
+{
+	_nestedParentMacro = parent;
+}
+
 bool Macro::Save(obs_data_t *obj, bool saveForCopy) const
 {
 	if (!saveForCopy) {
@@ -919,20 +1011,12 @@ bool Macro::Load(obs_data_t *obj)
 			"macroElseActionSplitterPosition");
 
 	obs_data_set_default_bool(obj, "registerHotkeys", true);
-	_registerHotkeys = obs_data_get_bool(obj, "registerHotkeys");
-	if (_registerHotkeys) {
-		SetupHotkeys();
-	}
-	OBSDataArrayAutoRelease pauseHotkey =
-		obs_data_get_array(obj, "pauseHotkey");
-	obs_hotkey_load(_pauseHotkey, pauseHotkey);
-	OBSDataArrayAutoRelease unpauseHotkey =
-		obs_data_get_array(obj, "unpauseHotkey");
-	obs_hotkey_load(_unpauseHotkey, unpauseHotkey);
-	OBSDataArrayAutoRelease togglePauseHotkey =
-		obs_data_get_array(obj, "togglePauseHotkey");
-	obs_hotkey_load(_togglePauseHotkey, togglePauseHotkey);
-	SetHotkeysDesc();
+	_registerHotkeys = !_isNested &&
+			   obs_data_get_bool(obj, "registerHotkeys");
+	_pauseHotkeyData = obs_data_get_array(obj, "pauseHotkey");
+	_unpauseHotkeyData = obs_data_get_array(obj, "unpauseHotkey");
+	_togglePauseHotkeyData = obs_data_get_array(obj, "togglePauseHotkey");
+	_hotkeyLoadPending = true;
 
 	bool root = true;
 	OBSDataArrayAutoRelease conditions =
@@ -1007,8 +1091,29 @@ bool Macro::Load(obs_data_t *obj)
 	return true;
 }
 
+void Macro::LoadHotkeys()
+{
+	if (!_hotkeyLoadPending) {
+		return;
+	}
+	_hotkeyLoadPending = false;
+
+	if (_registerHotkeys) {
+		SetupHotkeys();
+	}
+	obs_hotkey_load(_pauseHotkey, _pauseHotkeyData);
+	obs_hotkey_load(_unpauseHotkey, _unpauseHotkeyData);
+	obs_hotkey_load(_togglePauseHotkey, _togglePauseHotkeyData);
+	SetHotkeysDesc();
+
+	_pauseHotkeyData = nullptr;
+	_unpauseHotkeyData = nullptr;
+	_togglePauseHotkeyData = nullptr;
+}
+
 bool Macro::PostLoad()
 {
+	LoadHotkeys();
 	for (auto &c : _conditions) {
 		c->WithLock([c]() { c->PostLoad(); });
 	}
@@ -1134,6 +1239,10 @@ static obs_hotkey_id registerHotkeyHelper(const std::string prefix,
 
 void Macro::SetupHotkeys()
 {
+	if (_isNested) {
+		return;
+	}
+
 	if (_pauseHotkey != OBS_INVALID_HOTKEY_ID ||
 	    _unpauseHotkey != OBS_INVALID_HOTKEY_ID ||
 	    _togglePauseHotkey != OBS_INVALID_HOTKEY_ID) {
@@ -1181,17 +1290,13 @@ void Macro::SetHotkeysDesc() const
 
 void SaveMacros(obs_data_t *obj)
 {
-	obs_data_array_t *macroArray = obs_data_array_create();
+	OBSDataArrayAutoRelease macroArray = obs_data_array_create();
 	for (const auto &m : GetTopLevelMacros()) {
-		obs_data_t *array_obj = obs_data_create();
-
+		OBSDataAutoRelease array_obj = obs_data_create();
 		m->Save(array_obj);
 		obs_data_array_push_back(macroArray, array_obj);
-
-		obs_data_release(array_obj);
 	}
 	obs_data_set_array(obj, "macros", macroArray);
-	obs_data_array_release(macroArray);
 }
 
 void LoadMacros(obs_data_t *obj)
@@ -1199,53 +1304,62 @@ void LoadMacros(obs_data_t *obj)
 	auto &macros = GetTopLevelMacros();
 	macros.clear();
 
-	obs_data_array_t *macroArray = obs_data_get_array(obj, "macros");
+	OBSDataArrayAutoRelease macroArray = obs_data_get_array(obj, "macros");
 	size_t count = obs_data_array_count(macroArray);
 
 	for (size_t i = 0; i < count; i++) {
-		obs_data_t *array_obj = obs_data_array_item(macroArray, i);
+		OBSDataAutoRelease array_obj =
+			obs_data_array_item(macroArray, i);
 		macros.emplace_back(std::make_shared<Macro>());
 		macros.back()->Load(array_obj);
-		obs_data_release(array_obj);
 	}
-	obs_data_array_release(macroArray);
 
-	int groupCount = 0;
-	std::shared_ptr<Macro> group;
-	std::vector<std::shared_ptr<Macro>> invalidGroups;
+	Macro::RestoreGroupHierarchy(macros);
 	for (const auto &m : macros) {
-		if (groupCount && m->IsGroup()) {
-			blog(LOG_ERROR,
-			     "nested group detected - will delete \"%s\"",
-			     m->Name().c_str());
-			invalidGroups.emplace_back(m);
-			continue;
-		}
-		if (groupCount) {
-			m->SetParent(group);
-			groupCount--;
-		}
-		if (m->IsGroup()) {
-			groupCount = m->GroupSize();
-			group = m;
-		}
 		m->PostLoad();
 	}
+}
 
-	if (groupCount) {
-		blog(LOG_ERROR,
-		     "invalid group size detected - will delete \"%s\"",
-		     group->Name().c_str());
-		invalidGroups.emplace_back(group);
+std::vector<std::shared_ptr<Macro>> LoadImportedMacros(
+	obs_data_array_t *array,
+	const std::function<bool(const std::shared_ptr<Macro> &)> &shouldImport)
+{
+	std::deque<std::shared_ptr<Macro>> loaded;
+	auto &tempMacros = GetTemporaryMacros();
+	const size_t count = obs_data_array_count(array);
+	for (size_t i = 0; i < count; i++) {
+		tempMacros.clear();
+		OBSDataAutoRelease obj = obs_data_array_item(array, i);
+		auto macro = std::make_shared<Macro>();
+		tempMacros.emplace_back(macro);
+		macro->Load(obj);
+		RunAndClearPostLoadSteps();
+		loaded.emplace_back(macro);
 	}
+	tempMacros.clear();
+	Macro::RestoreGroupHierarchy(loaded);
 
-	for (auto &m : invalidGroups) {
-		auto it = std::find(macros.begin(), macros.end(), m);
-		if (it == macros.end()) {
+	std::vector<std::shared_ptr<Macro>> imported;
+	for (const auto &macro : loaded) {
+		if (!shouldImport(macro)) {
+			for (const auto &child : loaded) {
+				if (child->Parent() == macro) {
+					Macro::PrepareMoveToGroup(
+						macro->Parent(), child);
+				}
+			}
+			Macro::PrepareMoveToGroup(nullptr, macro);
 			continue;
 		}
-		macros.erase(it);
+		GetTopLevelMacros().emplace_back(macro);
+		imported.emplace_back(macro);
 	}
+
+	for (const auto &macro : imported) {
+		macro->PostLoad();
+	}
+	RunAndClearPostLoadSteps();
+	return imported;
 }
 
 bool CheckMacros()
@@ -1316,11 +1430,20 @@ bool RunMacros()
 	return true;
 }
 
-void StopAllMacros()
+void SignalStopAllMacros()
 {
+	for (const auto &m : GetAllMacros()) {
+		m->SignalStop();
+	}
+}
+
+void WaitForAllMacros()
+{
+	blog(LOG_INFO, "waiting for all macros to stop");
 	for (const auto &m : GetAllMacros()) {
 		m->Stop();
 	}
+	blog(LOG_INFO, "all macros stopped");
 }
 
 void InvalidateMacroTempVarValues()

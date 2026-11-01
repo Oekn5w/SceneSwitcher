@@ -317,6 +317,21 @@ bool MacroConditionTwitch::CheckChannelLiveEvents()
 	return false;
 }
 
+bool MacroConditionTwitch::CheckChannelSubscriptionMessageEvent()
+{
+	return HandleMatchingSubscriptionEvents([this](const Event &event) {
+		SetVariableValue(event.ToString());
+		SetJsonTempVars(event.data,
+				[this](const char *id, const char *value) {
+					SetTempVarValue(id, value);
+				});
+		OBSDataAutoRelease message =
+			obs_data_get_obj(event.data, "message");
+		SetTempVarValue("message_text",
+				obs_data_get_string(message, "text"));
+	});
+}
+
 bool MacroConditionTwitch::CheckChannelRewardChangeEvents()
 {
 	return HandleMatchingSubscriptionEvents([this](const Event &event) {
@@ -547,16 +562,18 @@ bool MacroConditionTwitch::CheckChatMessageRemove(TwitchToken &token)
 
 bool MacroConditionTwitch::ChatConnectionIsSetup(TwitchToken &token)
 {
+	if (_chatConnection) {
+		_chatConnection->ConnectToChat();
+		return true;
+	}
+
+	_chatConnection =
+		TwitchChatConnection::GetChatConnection(token, _channel);
 	if (!_chatConnection) {
-		_chatConnection = TwitchChatConnection::GetChatConnection(
-			token, _channel);
-		if (!_chatConnection) {
-			return false;
-		}
-		_chatBuffer = _chatConnection->RegisterForMessages();
 		return false;
 	}
-	return true;
+	_chatBuffer = _chatConnection->RegisterForMessages();
+	return false;
 }
 
 bool MacroConditionTwitch::HandleChatEvents(
@@ -687,7 +704,6 @@ bool MacroConditionTwitch::CheckCondition()
 	case Condition::SUBSCRIPTION_START_EVENT:
 	case Condition::SUBSCRIPTION_END_EVENT:
 	case Condition::SUBSCRIPTION_GIFT_EVENT:
-	case Condition::SUBSCRIPTION_MESSAGE_EVENT:
 	case Condition::CHEER_EVENT:
 	case Condition::RAID_OUTBOUND_EVENT:
 	case Condition::RAID_INBOUND_EVENT:
@@ -718,6 +734,8 @@ bool MacroConditionTwitch::CheckCondition()
 	case Condition::USER_MODERATOR_ADDITION_EVENT:
 	case Condition::USER_MODERATOR_DELETION_EVENT:
 		return CheckChannelGenericEvents();
+	case Condition::SUBSCRIPTION_MESSAGE_EVENT:
+		return CheckChannelSubscriptionMessageEvent();
 	case Condition::POINTS_REWARD_ADDITION_EVENT:
 	case Condition::POINTS_REWARD_UPDATE_EVENT:
 	case Condition::POINTS_REWARD_DELETION_EVENT:
@@ -1205,6 +1223,7 @@ void MacroConditionTwitch::SetupTempVars()
 		setupTempVarHelper("user_name", ".subscribe.message");
 		setupTempVarHelper("tier", ".subscribe");
 		setupTempVarHelper("message", ".subscribe");
+		setupTempVarHelper("message_text", ".subscribe");
 		setupTempVarHelper("cumulative_months", ".subscribe");
 		setupTempVarHelper("streak_months", ".subscribe");
 		setupTempVarHelper("duration_months", ".subscribe");

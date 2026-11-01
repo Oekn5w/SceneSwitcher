@@ -1,16 +1,18 @@
 #include "tag-selection.hpp"
+
 #include "channel-selection.hpp"
 #include "log-helper.hpp"
 #include "obs-module-helper.hpp"
 #include "twitch-helpers.hpp"
 
-#include <nlohmann/json.hpp>
 #include <QHBoxLayout>
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QVBoxLayout>
+
+#include <nlohmann/json.hpp>
 
 namespace advss {
 
@@ -177,7 +179,7 @@ bool TagListWidget::IsValidTag(const QString &tag)
 		return true;
 	}
 
-	QRegularExpression regex("^[A-Za-z0-9]+$"); // Only letters and digits
+	static const QRegularExpression regex("^[\\p{L}\\p{M}\\p{N}]+$");
 	return regex.match(tag).hasMatch();
 }
 

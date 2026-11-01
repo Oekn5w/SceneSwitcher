@@ -1,6 +1,7 @@
 #include "macro-condition-cursor.hpp"
 #include "cursor-helpers.hpp"
 #include "layout-helpers.hpp"
+#include "screen-region-selection.hpp"
 #include "utility.hpp"
 
 #include <QGuiApplication>
@@ -144,11 +145,14 @@ MacroConditionCursorEdit::MacroConditionCursorEdit(
 	  _buttons(new QComboBox()),
 	  _frameToggle(new QPushButton(obs_module_text(
 		  "AdvSceneSwitcher.condition.cursor.showFrame"))),
+	  _drawFrame(new QPushButton(obs_module_text(
+		  "AdvSceneSwitcher.condition.cursor.drawFrame"))),
 	  _xPos(new QLabel("-")),
 	  _yPos(new QLabel("-")),
 	  _curentPosLayout(new QHBoxLayout())
 {
 	_frame.setAttribute(Qt::WA_TransparentForMouseEvents);
+	_drawFrame->setAttribute(Qt::WA_NoMousePropagation);
 
 	populateConditionSelection(_conditions);
 	populateButtonSelection(_buttons);
@@ -190,8 +194,10 @@ MacroConditionCursorEdit::MacroConditionCursorEdit(
 		this, SLOT(MaxYChanged(const NumberVariable<int> &)));
 	QWidget::connect(_frameToggle, SIGNAL(clicked()), this,
 			 SLOT(ToggleFrame()));
+	connect(_drawFrame, &QPushButton::clicked, this,
+		&MacroConditionCursorEdit::DrawFrame, Qt::QueuedConnection);
 
-	std::unordered_map<std::string, QWidget *> widgetPlaceholders = {
+	const std::unordered_map<std::string, QWidget *> widgetPlaceholders = {
 		{"{{conditions}}", _conditions},
 		{"{{buttons}}", _buttons},
 		{"{{minX}}", _minX},
@@ -201,15 +207,16 @@ MacroConditionCursorEdit::MacroConditionCursorEdit(
 		{"{{xPos}}", _xPos},
 		{"{{yPos}}", _yPos},
 		{"{{toggleFrameButton}}", _frameToggle},
+		{"{{drawFrameButton}}", _drawFrame},
 	};
-	QHBoxLayout *line1 = new QHBoxLayout;
+	auto line1 = new QHBoxLayout;
 	PlaceWidgets(obs_module_text(
-			     "AdvSceneSwitcher.condition.cursor.entry.line1"),
+			     "AdvSceneSwitcher.condition.cursor.layout.line1"),
 		     line1, widgetPlaceholders);
 	PlaceWidgets(obs_module_text(
-			     "AdvSceneSwitcher.condition.cursor.entry.line2"),
+			     "AdvSceneSwitcher.condition.cursor.layout.line2"),
 		     _curentPosLayout, widgetPlaceholders);
-	QVBoxLayout *mainLayout = new QVBoxLayout;
+	auto mainLayout = new QVBoxLayout;
 	mainLayout->addLayout(line1);
 	mainLayout->addLayout(_curentPosLayout);
 	setLayout(mainLayout);
@@ -287,6 +294,49 @@ void MacroConditionCursorEdit::ToggleFrame()
 	}
 }
 
+void MacroConditionCursorEdit::DrawFrame()
+{
+	if (_loading || !_entryData || !_drawFrame->isEnabled()) {
+		return;
+	}
+	const bool frameVisible = _frame.isVisible();
+	_frame.hide();
+	_drawFrame->setEnabled(false);
+	auto selection = new ScreenRegionSelection(this);
+	connect(selection, &ScreenRegionSelection::RegionSelected, this,
+		[this](const QRect &region) {
+			GUARD_LOADING_AND_LOCK();
+			if (_entryData->_condition !=
+			    MacroConditionCursor::Condition::REGION) {
+				return;
+			}
+			_entryData->_minX = region.left();
+			_entryData->_minY = region.top();
+			_entryData->_maxX = region.right();
+			_entryData->_maxY = region.bottom();
+
+			const QSignalBlocker b1(_minX);
+			const QSignalBlocker b2(_minY);
+			const QSignalBlocker b3(_maxX);
+			const QSignalBlocker b4(_maxY);
+			_minX->SetValue(_entryData->_minX);
+			_minY->SetValue(_entryData->_minY);
+			_maxX->SetValue(_entryData->_maxX);
+			_maxY->SetValue(_entryData->_maxY);
+			SetupFrame();
+		});
+	connect(selection, &ScreenRegionSelection::Finished, this,
+		[this, frameVisible]() {
+			_drawFrame->setEnabled(true);
+			if (frameVisible &&
+			    _entryData->_condition ==
+				    MacroConditionCursor::Condition::REGION) {
+				SetupFrame();
+				_frame.show();
+			}
+		});
+}
+
 void MacroConditionCursorEdit::SetWidgetVisibility()
 {
 	const bool isRegionCondition = _entryData->_condition ==
@@ -295,7 +345,6 @@ void MacroConditionCursorEdit::SetWidgetVisibility()
 	_minY->setVisible(isRegionCondition);
 	_maxX->setVisible(isRegionCondition);
 	_maxY->setVisible(isRegionCondition);
-	_frameToggle->setVisible(isRegionCondition);
 	SetLayoutVisible(_curentPosLayout, isRegionCondition);
 	if (_frame.isVisible()) {
 		ToggleFrame();

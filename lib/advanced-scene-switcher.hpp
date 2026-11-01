@@ -1,7 +1,4 @@
 #pragma once
-#include "macro-segment-list.hpp"
-#include "condition-logic.hpp"
-#include "log-helper.hpp"
 
 #include <ui_advanced-scene-switcher.h>
 
@@ -64,10 +61,12 @@ public slots:
 	void on_saveWindowGeo_stateChanged(int state);
 	void on_showTrayNotifications_stateChanged(int state);
 	void on_uiHintsDisable_stateChanged(int state);
+	void on_inactiveStatusBlinkDisable_stateChanged(int state);
 	void on_disableComboBoxFilter_stateChanged(int state);
 	void on_warnPluginLoadFailure_stateChanged(int state);
 	void on_suppressCrashRecoveryDialog_stateChanged(int state);
 	void on_hideLegacyTabs_stateChanged(int state);
+	void on_settingsLock_stateChanged(int state);
 	void on_priorityUp_clicked();
 	void on_priorityDown_clicked();
 	void on_threadPriority_currentTextChanged(const QString &text);
@@ -116,6 +115,8 @@ public slots:
 	void RenameSelectedMacro();
 	void ExportMacros() const;
 	void ImportMacros();
+	void PauseSelectedMacros();
+	void UnpauseSelectedMacros();
 	void HighlightOnChange() const;
 	void on_macroSettings_clicked();
 

@@ -9,6 +9,8 @@ target_sources(
           macro-action-audio.hpp
           macro-action-clipboard.cpp
           macro-action-clipboard.hpp
+          macro-action-create-source.cpp
+          macro-action-create-source.hpp
           macro-action-file.cpp
           macro-action-file.hpp
           macro-action-filter.cpp
@@ -178,6 +180,8 @@ target_sources(
           utils/process-config.hpp
           utils/profile-helpers.cpp
           utils/profile-helpers.hpp
+          utils/screen-region-selection.cpp
+          utils/screen-region-selection.hpp
           utils/scene-item-selection.cpp
           utils/scene-item-selection.hpp
           utils/scene-item-transform-helpers.cpp
@@ -223,7 +227,7 @@ get_target_property(ADVSS_SOURCE_DIR advanced-scene-switcher-lib SOURCE_DIR)
 add_definitions(-DASIO_STANDALONE)
 target_include_directories(
   ${LIB_NAME}
-  PUBLIC "${ADVSS_SOURCE_DIR}/deps/asio/asio/include"
+  PUBLIC "${ADVSS_SOURCE_DIR}/deps/asio/include"
          "${ADVSS_SOURCE_DIR}/deps/websocketpp"
          "${ADVSS_SOURCE_DIR}/deps/obs-websocket/lib")
 

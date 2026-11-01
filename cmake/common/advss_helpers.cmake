@@ -2,7 +2,8 @@
 
 if(BUILD_OUT_OF_TREE)
   if(OS_WINDOWS)
-    set(OBS_PLUGIN_DESTINATION "${CMAKE_PROJECT_NAME}/bin/64bit")
+    set(OBS_PLUGIN_DESTINATION
+        "${CMAKE_PROJECT_NAME}${ADVSS_WINDOWS_BIN_SUBDIR}")
   else()
     set(OBS_PLUGIN_DESTINATION "${CMAKE_INSTALL_LIBDIR}/obs-plugins")
   endif()
@@ -157,7 +158,9 @@ else()
       set_target_properties(${target} PROPERTIES INSTALL_RPATH
                                                  "$ORIGIN:$ORIGIN/..")
     endif()
-    message(STATUS "ADVSS: ENABLED PLUGIN     ${target}")
+    get_filename_component(_plugin_dir_name "${CMAKE_CURRENT_SOURCE_DIR}" NAME)
+    set_property(GLOBAL APPEND PROPERTY ADVSS_PLUGINS_ENABLED
+                                        ${_plugin_dir_name})
   endfunction()
 
   function(install_advss_plugin_dependency_target target dep)
@@ -317,7 +320,7 @@ function(setup_advss_plugin target)
   target_include_directories(
     ${target}
     PRIVATE "${ADVSS_BINARY_DIR}/advanced-scene-switcher-lib_autogen/include")
-  foreach(_CONF Release RelWithDebInfo Debug MinSizeRe)
+  foreach(_CONF Release RelWithDebInfo Debug MinSizeRel)
     target_include_directories(
       ${target}
       PRIVATE
@@ -331,6 +334,8 @@ function(setup_advss_plugin target)
     PRIVATE "${ADVSS_SOURCE_DIR}/lib" "${ADVSS_SOURCE_DIR}/lib/legacy"
             "${ADVSS_SOURCE_DIR}/lib/macro" "${ADVSS_SOURCE_DIR}/lib/utils"
             "${ADVSS_SOURCE_DIR}/lib/variables" "${ADVSS_SOURCE_DIR}/forms")
+
+  target_precompile_headers(${target} PRIVATE "${ADVSS_SOURCE_DIR}/lib/pch.hpp")
 endfunction()
 
 function(install_advss_plugin_dependency)

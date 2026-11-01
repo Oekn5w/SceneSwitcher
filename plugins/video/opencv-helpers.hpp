@@ -3,6 +3,9 @@
 #undef NO // MacOS macro that can conflict with OpenCV
 #include <cstddef>
 #include <opencv2/opencv.hpp>
+#if CV_VERSION_MAJOR >= 5
+#include <opencv2/xobjdetect.hpp>
+#endif
 
 #ifdef OCR_SUPPORT
 #include <tesseract/baseapi.h>
@@ -69,10 +72,6 @@ double MatchPattern(QImage &img, QImage &pattern, double threshold,
 		    cv::Mat &result, bool useAlphaAsMask,
 		    cv::TemplateMatchModes matchMode);
 int CountPatternMatches(const cv::Mat &result, const cv::Size &patternSize);
-std::vector<cv::Rect> MatchObject(QImage &img, cv::CascadeClassifier &cascade,
-				  double scaleFactor, int minNeighbors,
-				  const cv::Size &minSize,
-				  const cv::Size &maxSize);
 uchar GetAvgBrightness(QImage &img);
 cv::Mat PreprocessForOCR(const QImage &image, const QColor &color,
 			 double colorDiff);

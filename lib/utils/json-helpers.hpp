@@ -4,6 +4,8 @@
 
 #include <QString>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace advss {
 
@@ -17,5 +19,18 @@ EXPORT std::optional<std::string> QueryJson(const std::string &json,
 					    const std::string &query);
 EXPORT std::optional<std::string> AccessJsonArrayIndex(const std::string &json,
 						       const int index);
+EXPORT std::optional<std::string>
+ExtractSingleJsonArrayElement(const std::string &json);
+EXPORT std::optional<int> GetJsonArrayLength(const std::string &json);
+EXPORT std::optional<std::string> SetJsonField(const std::string &json,
+					       const std::string &id,
+					       const std::string &value);
+
+EXPORT std::vector<std::pair<std::string, int>>
+CollectDistinctJsonStringValues(const std::string &json);
+EXPORT std::string ReplaceJsonStringValue(const std::string &json,
+					  const std::string &oldValue,
+					  const std::string &newValue);
+EXPORT std::string GenerateImportPlaceholder();
 
 } // namespace advss

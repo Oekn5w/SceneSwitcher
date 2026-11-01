@@ -10,6 +10,7 @@
 #include "tag-selection.hpp"
 
 #include <variable-line-edit.hpp>
+#include <variable-ref.hpp>
 #include <variable-text-edit.hpp>
 #include <duration-control.hpp>
 #include <duration.hpp>
@@ -44,7 +45,7 @@ public:
 		SHOUTOUT_SEND = 200,
 
 		// Poll
-		POLL_START = 300, // TODO
+		POLL_START = 300,
 		POLL_END = 310,
 
 		// Prediction
@@ -142,9 +143,15 @@ public:
 
 		SEND_CHAT_MESSAGE = 5000,
 
-		// Get user info
+		// Get info
 		USER_GET_INFO = 6000,
 		CHANNEL_GET_INFO = 6100,
+		CHANNEL_ADS_GET_INFO = 6200,
+	};
+
+	enum class PollEndStatus {
+		TERMINATED,
+		ARCHIVED,
 	};
 
 	enum class AnnouncementColor {
@@ -191,8 +198,11 @@ public:
 	DoubleVariable _userId = 0;
 	StringVariable _banReason = "";
 	TwitchPointsReward _pointsReward;
-	std::weak_ptr<Variable> _rewardVariable;
+	VariableRef _rewardVariable;
 	bool _useVariableForRewardSelection = false;
+	StringVariable _pollTitle = "Poll question";
+	StringVariable _pollChoices = "Choice 1\nChoice 2";
+	PollEndStatus _pollEndStatus = PollEndStatus::TERMINATED;
 
 private:
 	void SetStreamTitle(const std::shared_ptr<TwitchToken> &) const;
@@ -202,10 +212,13 @@ private:
 	void StartCommercial(const std::shared_ptr<TwitchToken> &) const;
 	void SendChatAnnouncement(const std::shared_ptr<TwitchToken> &) const;
 	void StartRaid(const std::shared_ptr<TwitchToken> &);
+	void StartPoll(const std::shared_ptr<TwitchToken> &) const;
+	void EndPoll(const std::shared_ptr<TwitchToken> &) const;
 	void SendChatMessage(const std::shared_ptr<TwitchToken> &);
 	void GetUserInfo(const std::shared_ptr<TwitchToken> &);
 	void GetRewardInfo(const std::shared_ptr<TwitchToken> &);
-	void GetChannelInfo(const std::shared_ptr<TwitchToken> &token);
+	void GetChannelInfo(const std::shared_ptr<TwitchToken> &);
+	void GetAdsInfo(const std::shared_ptr<TwitchToken> &);
 
 	std::optional<std::string>
 	GetTargetUserID(const std::shared_ptr<TwitchToken> &) const;
@@ -261,6 +274,9 @@ private slots:
 	void UserLoginChanged();
 	void UserIdChanged(const NumberVariable<double> &);
 	void BanReasonChanged();
+	void PollTitleChanged();
+	void PollChoicesChanged();
+	void PollEndStatusChanged(int);
 	void PointsRewardChanged(const TwitchPointsReward &);
 	void RewardVariableChanged(const QString &);
 	void ToggleRewardSelection(bool);
@@ -305,6 +321,9 @@ private:
 	// we use QDoubleSpinBox instead
 	VariableDoubleSpinBox *_userId;
 	VariableLineEdit *_banReason;
+	VariableLineEdit *_pollTitle;
+	VariableTextEdit *_pollChoices;
+	QComboBox *_pollEndStatus;
 	TwitchPointsRewardWidget *_pointsReward;
 	VariableSelection *_rewardVariable;
 	QPushButton *_toggleRewardSelection;

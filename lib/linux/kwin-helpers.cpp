@@ -5,6 +5,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileDevice>
+#include <QStandardPaths>
 #include <QTextStream>
 #include <QtDBus/QDBusConnectionInterface>
 #include <QtDBus/QDBusInterface>
@@ -12,35 +13,82 @@
 
 namespace advss {
 
+std::mutex FocusNotifier::_mutex;
 int FocusNotifier::activePID = -1;
 std::string FocusNotifier::activeTitle = {};
+std::map<std::string, std::pair<int, std::string>> FocusNotifier::_windows;
 
 int FocusNotifier::getActiveWindowPID()
 {
+	std::lock_guard<std::mutex> lock(_mutex);
 	return activePID;
 }
 
 std::string FocusNotifier::getActiveWindowTitle()
 {
+	std::lock_guard<std::mutex> lock(_mutex);
 	return activeTitle;
+}
+
+std::vector<std::pair<int, std::string>> FocusNotifier::getWindowList()
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	std::vector<std::pair<int, std::string>> result;
+	result.reserve(_windows.size());
+	for (const auto &entry : _windows) {
+		result.emplace_back(entry.second);
+	}
+	return result;
 }
 
 void FocusNotifier::focusChanged(const int pid)
 {
+	std::lock_guard<std::mutex> lock(_mutex);
 	activePID = pid;
 }
 
 void FocusNotifier::focusTitle(const QString &title)
 {
+	std::lock_guard<std::mutex> lock(_mutex);
 	activeTitle = title.toStdString();
+}
+
+void FocusNotifier::focusUpdate(const int pid, const QString &title)
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	activePID = pid;
+	activeTitle = title.toStdString();
+}
+
+void FocusNotifier::windowAdded(const QString &id, const int pid,
+				const QString &title)
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	_windows[id.toStdString()] = {pid, title.toStdString()};
+}
+
+void FocusNotifier::windowRemoved(const QString &id)
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	_windows.erase(id.toStdString());
+}
+
+void FocusNotifier::windowTitleChanged(const QString &id, const QString &title)
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	auto it = _windows.find(id.toStdString());
+	if (it != _windows.end()) {
+		it->second.second = title.toStdString();
+	}
 }
 
 bool isKWinAvailable()
 {
 	const QDBusConnectionInterface *interface =
 		QDBusConnection::sessionBus().interface();
-	if (!interface)
+	if (!interface) {
 		return false;
+	}
 
 	const QStringList services =
 		interface->registeredServiceNames().value();
@@ -49,33 +97,45 @@ bool isKWinAvailable()
 
 bool startKWinScript(QString &scriptObjectPath)
 {
+	// Not RuntimeLocation: under Flatpak, $XDG_RUNTIME_DIR is private to
+	// the sandbox, so the unsandboxed KWin process can't read it back.
 	const QString scriptPath =
-		"/tmp/AdvancedSceneSwitcher/KWinFocusNotifier.js";
+		QStandardPaths::writableLocation(
+			QStandardPaths::CacheLocation) +
+		"/AdvancedSceneSwitcher/KWinFocusNotifier.js";
 
 	const QString script =
-		R"(workspace.windowActivated.connect(function(client) {
-if (!client) return;
-if (!client.pid) return;
-if (!client.caption) return;
+		R"(var adss = "com.obsproject.Studio.Plugin.SceneSwitcher";
+var adssPath = "/com/obsproject/Studio/Plugin/SceneSwitcher";
 
-callDBus(
-    "com.github.AdvancedSceneSwitcher",
-	"/com/github/AdvancedSceneSwitcher",
-	"com.github.AdvancedSceneSwitcher",
-	"focusChanged",
-	client.pid
-);
-callDBus(
-    "com.github.AdvancedSceneSwitcher",
-	"/com/github/AdvancedSceneSwitcher",
-	"com.github.AdvancedSceneSwitcher",
-	"focusTitle",
-	client.caption
-);
+function trackWindow(window) {
+    var id = window.internalId.toString();
+    callDBus(adss, adssPath, adss, "windowAdded", id, window.pid, window.caption);
+    window.captionChanged.connect(function() {
+        callDBus(adss, adssPath, adss, "windowTitleChanged", id, window.caption);
+    });
+}
+
+var windows = workspace.windowList();
+for (var i = 0; i < windows.length; i++) {
+    trackWindow(windows[i]);
+}
+
+workspace.windowAdded.connect(trackWindow);
+
+workspace.windowRemoved.connect(function(window) {
+    callDBus(adss, adssPath, adss, "windowRemoved", window.internalId.toString());
+});
+
+workspace.windowActivated.connect(function(client) {
+    callDBus(adss, adssPath, adss, "focusUpdate",
+        client ? client.pid : 0,
+        client ? client.caption : "");
 }))";
 
 	if (const QDir dir; !dir.mkpath(QFileInfo(scriptPath).absolutePath())) {
-		blog(LOG_ERROR, "error creating /tmp/AdvancedSceneSwitcher");
+		blog(LOG_ERROR,
+		     "error creating KWinFocusNotifier script directory");
 		return false;
 	}
 
@@ -144,8 +204,10 @@ bool stopKWinScript(const QString &scriptObjectPath)
 
 bool registerKWinDBusListener(FocusNotifier *notifier)
 {
-	static const QString serviceName = "com.github.AdvancedSceneSwitcher";
-	static const QString objectPath = "/com/github/AdvancedSceneSwitcher";
+	static const QString serviceName =
+		"com.obsproject.Studio.Plugin.SceneSwitcher";
+	static const QString objectPath =
+		"/com/obsproject/Studio/Plugin/SceneSwitcher";
 	auto bus = QDBusConnection::sessionBus();
 
 	if (bus.objectRegisteredAt(objectPath)) {

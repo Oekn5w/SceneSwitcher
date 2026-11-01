@@ -4,17 +4,21 @@
 #include "parameter-wrappers.hpp"
 #include "preview-dialog.hpp"
 
-#include <help-icon.hpp>
-#include <macro-condition-edit.hpp>
-#include <file-selection.hpp>
-#include <screenshot-helper.hpp>
-#include <slider-spinbox.hpp>
-#include <source-helpers.hpp>
-#include <variable-line-edit.hpp>
-#include <variable-text-edit.hpp>
+#include "help-icon.hpp"
+#include "section.hpp"
+#include "macro-condition-edit.hpp"
+#include "file-selection.hpp"
+#include "screenshot-helper.hpp"
+#include "slider-spinbox.hpp"
+#include "source-helpers.hpp"
+#include "variable-color-button.hpp"
+#include "variable-line-edit.hpp"
+#include "variable-text-edit.hpp"
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDoubleSpinBox>
+#include <QLineEdit>
 #include <QDateTime>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -56,7 +60,7 @@ public:
 
 	VideoInput _video;
 	bool _keepActive = false;
-	std::string _file = obs_module_text("AdvSceneSwitcher.enterPath");
+	StringVariable _file = obs_module_text("AdvSceneSwitcher.enterPath");
 	// Enabling this will reduce matching latency, but slow down the
 	// the condition checks of all macros overall.
 	//
@@ -69,7 +73,7 @@ public:
 	bool _blockUntilScreenshotDone = true;
 	NumberVariable<double> _brightnessThreshold = 0.5;
 	PatternMatchParameters _patternMatchParameters;
-	ObjDetectParameters _objMatchParameters;
+	CascadeClassifierParameters _cascadeMatchParameters;
 	OCRParameters _ocrParameters;
 	ColorParameters _colorParameters;
 	AreaParameters _areaParameters;
@@ -143,7 +147,7 @@ public:
 		const std::shared_ptr<MacroConditionVideo> &);
 
 private slots:
-	void SelectColorClicked();
+	void ColorChanged(const ColorVariable &);
 	void ColorThresholdChanged(const NumberVariable<double> &);
 	void MatchTextChanged();
 	void RegexChanged(const RegexConfig &conf);
@@ -154,12 +158,9 @@ private slots:
 	void ConfigFileChanged(const QString &);
 
 private:
-	void SetupColorLabel(const QColor &);
-
 	VariableTextEdit *_matchText;
 	RegexConfigWidget *_regex;
-	QLabel *_textColor;
-	QPushButton *_selectColor;
+	VariableColorButton *_colorButton;
 	SliderSpinBox *_colorThreshold;
 	QComboBox *_pageSegMode;
 	FileSelection *_tesseractBaseDir;
@@ -176,12 +177,12 @@ private:
 	bool _loading = true;
 };
 
-class ObjectDetectEdit : public QWidget {
+class CascadeClassifierEdit : public QWidget {
 	Q_OBJECT
 
 public:
-	ObjectDetectEdit(QWidget *parent, PreviewDialog *,
-			 const std::shared_ptr<MacroConditionVideo> &);
+	CascadeClassifierEdit(QWidget *parent, PreviewDialog *,
+			      const std::shared_ptr<MacroConditionVideo> &);
 
 private slots:
 	void ModelPathChanged(const QString &text);
@@ -212,17 +213,14 @@ public:
 		  const std::shared_ptr<MacroConditionVideo> &);
 
 private slots:
-	void SelectColorClicked();
+	void ColorChanged(const ColorVariable &);
 	void MatchThresholdChanged(const NumberVariable<double> &);
 	void ColorThresholdChanged(const NumberVariable<double> &);
 
 private:
-	void SetupColorLabel(const QColor &);
-
 	SliderSpinBox *_matchThreshold;
 	SliderSpinBox *_colorThreshold;
-	QLabel *_color;
-	QPushButton *_selectColor;
+	VariableColorButton *_colorButton;
 
 	std::shared_ptr<MacroConditionVideo> _entryData;
 	bool _loading = true;
@@ -325,7 +323,7 @@ private:
 
 	BrightnessEdit *_brightness;
 	OCREdit *_ocr;
-	ObjectDetectEdit *_objectDetect;
+	CascadeClassifierEdit *_cascadeClassifierEdit;
 	ColorEdit *_color;
 	AreaEdit *_area;
 

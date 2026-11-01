@@ -1,13 +1,15 @@
 #pragma once
+#include "object-detector.hpp"
 #include "opencv-helpers.hpp"
 #include "obs-module-helper.hpp"
 #include "area-selection.hpp"
+#include "source-selection.hpp"
+#include "scene-selection.hpp"
+#include "regex-config.hpp"
+#include "variable-color.hpp"
+#include "variable-string.hpp"
+#include "variable-number.hpp"
 
-#include <source-selection.hpp>
-#include <scene-selection.hpp>
-#include <regex-config.hpp>
-#include <variable-string.hpp>
-#include <variable-number.hpp>
 #include <obs.hpp>
 #include <obs-module.h>
 
@@ -26,7 +28,7 @@ enum class VideoCondition {
 	HAS_CHANGED,
 	NO_IMAGE,
 	PATTERN,
-	OBJECT,
+	OBJECT_CASCADE,
 	BRIGHTNESS,
 	OCR,
 	COLOR,
@@ -63,14 +65,37 @@ public:
 	NumberVariable<double> threshold = 0.999;
 };
 
-class ObjDetectParameters {
+class CascadeClassifierParameters {
 public:
 	bool Save(obs_data_t *obj) const;
 	bool Load(obs_data_t *obj);
 
+	CascadeClassifierParameters() = default;
+	CascadeClassifierParameters(const CascadeClassifierParameters &other)
+		: scaleFactor(other.scaleFactor),
+		  minNeighbors(other.minNeighbors),
+		  minSize(other.minSize),
+		  maxSize(other.maxSize),
+		  _modelPath(other._modelPath)
+	{
+	}
+	CascadeClassifierParameters &
+	operator=(const CascadeClassifierParameters &other)
+	{
+		if (this != &other) {
+			scaleFactor = other.scaleFactor;
+			minNeighbors = other.minNeighbors;
+			minSize = other.minSize;
+			maxSize = other.maxSize;
+			_modelPath = other._modelPath;
+			_detector.reset();
+		}
+		return *this;
+	}
+
 	bool SetModelPath(const std::string &path);
-	const std::string &GetModelPath() const { return modelPath; }
-	std::shared_ptr<cv::CascadeClassifier> GetModel();
+	const StringVariable &GetModelPath() const { return _modelPath; }
+	ObjectDetector *GetDetector();
 
 	NumberVariable<double> scaleFactor = defaultScaleFactor;
 	int minNeighbors = minMinNeighbors;
@@ -80,11 +105,12 @@ public:
 private:
 	bool LoadModelData();
 
-	std::shared_ptr<cv::CascadeClassifier> cascade;
-	std::string modelPath =
+	std::unique_ptr<ObjectDetector> _detector;
+	StringVariable _modelPath =
 		obs_get_module_data_path(obs_current_module()) +
 		std::string(
 			"/res/cascadeClassifiers/haarcascade_frontalface_alt.xml");
+	std::string _loadedModelPath;
 };
 
 class OCRParameters {
@@ -100,26 +126,27 @@ public:
 	bool Initialized() const { return initDone; }
 	void SetPageMode(tesseract::PageSegMode);
 	bool SetLanguageCode(const std::string &);
-	std::string GetLanguageCode() const;
+	const StringVariable &GetLanguageCode() const { return languageCode; }
 	bool SetTesseractBasePath(const std::string &);
-	std::string GetTesseractBasePath() const;
+	const StringVariable &GetTesseractBasePath() const
+	{
+		return tesseractBasePath;
+	}
 	void EnableCustomConfig(bool enable);
 	bool CustomConfigIsEnabled() const { return useConfig; }
 	void SetCustomConfigFile(const std::string &);
-	std::string GetCustomConfigFile() const { return configFile; }
+	const StringVariable &GetCustomConfigFile() const { return configFile; }
 	tesseract::PageSegMode GetPageMode() const { return pageSegMode; }
-	tesseract::TessBaseAPI *GetOCR() const
-	{
-		return initDone ? ocr.get() : nullptr;
-	}
+	tesseract::TessBaseAPI *GetOCR();
 
 	StringVariable text = obs_module_text("AdvSceneSwitcher.enterText");
 	RegexConfig regex = RegexConfig::PartialMatchRegexConfig();
-	QColor color = Qt::black;
+	ColorVariable color;
 	DoubleVariable colorThreshold = 0.3;
 
 private:
 	void Setup();
+	bool SetupIsUpToDate() const;
 
 	tesseract::PageSegMode pageSegMode = tesseract::PSM_SINGLE_BLOCK;
 	StringVariable tesseractBasePath =
@@ -127,9 +154,12 @@ private:
 		std::string("/res/ocr");
 	StringVariable languageCode = "eng";
 	bool useConfig = false;
-	std::string configFile = "config.txt";
+	StringVariable configFile = "config.txt";
 	std::unique_ptr<tesseract::TessBaseAPI> ocr;
 	bool initDone = false;
+	std::string setupBasePath;
+	std::string setupLanguageCode;
+	std::string setupConfigFile;
 };
 
 class ColorParameters {
@@ -137,7 +167,7 @@ public:
 	bool Save(obs_data_t *obj) const;
 	bool Load(obs_data_t *obj);
 
-	QColor color = Qt::black;
+	ColorVariable color;
 	DoubleVariable colorThreshold = 0.1;
 	DoubleVariable matchThreshold = 0.8;
 };

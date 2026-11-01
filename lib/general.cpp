@@ -4,9 +4,11 @@
 #include "filter-combo-box.hpp"
 #include "first-run-wizard.hpp"
 #include "layout-helpers.hpp"
-#include "macro.hpp"
+#include "macro-helpers.hpp"
 #include "macro-search.hpp"
 #include "macro-settings.hpp"
+#include "macro-undo-redo.hpp"
+#include "macro.hpp"
 #include "path-helpers.hpp"
 #include "source-helpers.hpp"
 #include "splitter-helpers.hpp"
@@ -18,7 +20,10 @@
 #include "version.h"
 
 #include <obs-frontend-api.h>
+
 #include <QFileDialog>
+#include <QInputDialog>
+#include <QMessageBox>
 
 namespace advss {
 
@@ -176,6 +181,15 @@ void AdvSceneSwitcher::on_uiHintsDisable_stateChanged(int state)
 	switcher->disableHints = state;
 }
 
+void AdvSceneSwitcher::on_inactiveStatusBlinkDisable_stateChanged(int state)
+{
+	if (loading) {
+		return;
+	}
+
+	switcher->disableInactiveStatusBlink = state;
+}
+
 void AdvSceneSwitcher::on_disableComboBoxFilter_stateChanged(int state)
 {
 	if (loading) {
@@ -241,6 +255,64 @@ void AdvSceneSwitcher::on_hideLegacyTabs_stateChanged(int state)
 	// Changing priority of legacy tabs will very likely not be necessary if
 	// the legacy tabs are hidden
 	ui->priorityBox->setVisible(!switcher->hideLegacyTabs);
+}
+
+void AdvSceneSwitcher::on_settingsLock_stateChanged(int state)
+{
+	if (loading) {
+		return;
+	}
+
+	if (!state) {
+		switcher->settingsLockEnabled = false;
+		switcher->settingsLockPassword = "";
+		return;
+	}
+
+	bool ok;
+	QString newPassword = QInputDialog::getText(
+		this,
+		obs_module_text(
+			"AdvSceneSwitcher.generalTab.generalBehavior.settingsLock.title"),
+		obs_module_text(
+			"AdvSceneSwitcher.generalTab.generalBehavior.settingsLock.newPasswordLabel"),
+		QLineEdit::Password, QString(), &ok);
+
+	const auto disablePassword = [this]() {
+		QSignalBlocker blocker(ui->settingsLock);
+		ui->settingsLock->setChecked(false);
+		ui->settingsLock->setCheckState(Qt::Unchecked);
+		switcher->settingsLockEnabled = false;
+		switcher->settingsLockPassword = "";
+	};
+
+	if (!ok || newPassword.isEmpty()) {
+		disablePassword();
+		return;
+	}
+
+	QString confirm = QInputDialog::getText(
+		this,
+		obs_module_text(
+			"AdvSceneSwitcher.generalTab.generalBehavior.settingsLock.title"),
+		obs_module_text(
+			"AdvSceneSwitcher.generalTab.generalBehavior.settingsLock.confirmPasswordLabel"),
+		QLineEdit::Password, QString(), &ok);
+	if (!ok || newPassword != confirm) {
+		if (ok) {
+			QMessageBox::warning(
+				this,
+				obs_module_text(
+					"AdvSceneSwitcher.generalTab.generalBehavior.settingsLock.title"),
+				obs_module_text(
+					"AdvSceneSwitcher.generalTab.generalBehavior.settingsLock.passwordMismatch"));
+		}
+		disablePassword();
+		return;
+	}
+
+	switcher->settingsLockEnabled = true;
+	switcher->settingsLockPassword = newPassword.toStdString();
 }
 
 void AdvSceneSwitcher::SetDeprecationWarnings()
@@ -341,9 +413,12 @@ void AdvSceneSwitcher::on_importSettings_clicked()
 	// the new settings are loaded
 	ui->macros->clearSelection();
 
-	std::lock_guard<std::mutex> lock(switcher->m);
-	switcher->LoadSettings(obj);
-	switcher->lastImportPath = path.toStdString();
+	{
+		// DisplayMessage() runs an event loop whose slots take this lock
+		std::lock_guard<std::mutex> lock(switcher->m);
+		switcher->LoadSettings(obj);
+		switcher->lastImportPath = path.toStdString();
+	}
 
 	(void)DisplayMessage(obs_module_text(
 		"AdvSceneSwitcher.generalTab.saveOrLoadsettings.loadSuccess"));
@@ -392,7 +467,7 @@ void AdvSceneSwitcher::CheckFirstTimeSetup()
 	}
 
 	bool wasSkipped = false;
-	auto macro = FirstRunWizard::ShowWizard(this, &wasSkipped);
+	auto macro = wiz::FirstRunWizard::ShowWizard(this, &wasSkipped);
 	if (macro) {
 		renameMacroIfNecessary(macro);
 		QTimer::singleShot(0, this,
@@ -406,7 +481,7 @@ void AdvSceneSwitcher::CheckFirstTimeSetup()
 
 void AdvSceneSwitcher::on_openSetupWizard_clicked()
 {
-	auto macro = FirstRunWizard::ShowWizard(this);
+	auto macro = wiz::FirstRunWizard::ShowWizard(this);
 	if (!macro) {
 		return;
 	}
@@ -563,10 +638,15 @@ void SwitcherData::SaveGeneralSettings(obs_data_t *obj)
 	obs_data_set_bool(obj, "showSystemTrayNotifications",
 			  showSystemTrayNotifications);
 	obs_data_set_bool(obj, "disableHints", disableHints);
+	obs_data_set_bool(obj, "disableInactiveStatusBlink",
+			  disableInactiveStatusBlink);
 	obs_data_set_bool(obj, "disableFilterComboboxFilter",
 			  disableFilterComboboxFilter);
 	obs_data_set_bool(obj, "warnPluginLoadFailure", warnPluginLoadFailure);
 	obs_data_set_bool(obj, "hideLegacyTabs", hideLegacyTabs);
+	obs_data_set_bool(obj, "settingsLockEnabled", settingsLockEnabled);
+	obs_data_set_string(obj, "settingsLockPassword",
+			    settingsLockPassword.c_str());
 
 	SaveFunctionPriorities(obj, functionNamesByPriority);
 
@@ -632,12 +712,16 @@ void SwitcherData::LoadGeneralSettings(obs_data_t *obj)
 	showSystemTrayNotifications =
 		obs_data_get_bool(obj, "showSystemTrayNotifications");
 	disableHints = obs_data_get_bool(obj, "disableHints");
+	disableInactiveStatusBlink =
+		obs_data_get_bool(obj, "disableInactiveStatusBlink");
 	disableFilterComboboxFilter =
 		obs_data_get_bool(obj, "disableFilterComboboxFilter");
 	obs_data_set_default_bool(obj, "warnPluginLoadFailure", true);
 	warnPluginLoadFailure = obs_data_get_bool(obj, "warnPluginLoadFailure");
 	obs_data_set_default_bool(obj, "hideLegacyTabs", true);
 	hideLegacyTabs = obs_data_get_bool(obj, "hideLegacyTabs");
+	settingsLockEnabled = obs_data_get_bool(obj, "settingsLockEnabled");
+	settingsLockPassword = obs_data_get_string(obj, "settingsLockPassword");
 
 	SetDefaultFunctionPriorities(obj);
 	LoadFunctionPriorities(obj, functionNamesByPriority);
@@ -953,6 +1037,8 @@ void AdvSceneSwitcher::SetupGeneralTab()
 	ui->showTrayNotifications->setChecked(
 		switcher->showSystemTrayNotifications);
 	ui->uiHintsDisable->setChecked(switcher->disableHints);
+	ui->inactiveStatusBlinkDisable->setChecked(
+		switcher->disableInactiveStatusBlink);
 	ui->disableComboBoxFilter->setChecked(
 		switcher->disableFilterComboboxFilter);
 	FilterComboBox::SetFilterBehaviourEnabled(
@@ -960,6 +1046,15 @@ void AdvSceneSwitcher::SetupGeneralTab()
 	ui->warnPluginLoadFailure->setChecked(switcher->warnPluginLoadFailure);
 	ui->suppressCrashRecoveryDialog->setChecked(GetSuppressCrashDialog());
 	ui->hideLegacyTabs->setChecked(switcher->hideLegacyTabs);
+	ui->settingsLock->setChecked(switcher->settingsLockEnabled);
+	ui->disableUndoRedo->setChecked(!GetUndoRedoEnabled());
+	connect(ui->disableUndoRedo, &QCheckBox::stateChanged, this,
+		[this](int state) {
+			if (loading) {
+				return;
+			}
+			SetUndoRedoEnabled(!state);
+		});
 
 	populatePriorityFunctionList(ui->priorityList);
 	populateThreadPriorityList(ui->threadPriority);

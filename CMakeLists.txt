@@ -16,6 +16,14 @@ if(BUILD_OUT_OF_TREE)
   include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/common/bootstrap.cmake"
           NO_POLICY_SCOPE)
   include(compilerconfig)
+  # OPENSSL_USE_STATIC_LIBS here ensures FindOpenSSL picks up the static libs
+  # preventing DLL name collisions with other plugins (e.g.NVIDIA AR SDK).
+  if(OS_WINDOWS)
+    set(OPENSSL_USE_STATIC_LIBS
+        ON
+        CACHE BOOL "Use static OpenSSL" FORCE)
+    include(cmake/windows/wingetssl.cmake)
+  endif()
   include(defaults)
   include(helpers)
 endif()
@@ -33,11 +41,6 @@ add_library(${LIB_NAME} SHARED)
 include(cmake/common/get_git_revision_description.cmake)
 get_git_head_revision(GIT_REFSPEC GIT_SHA1)
 git_describe(GIT_TAG)
-
-# Helper for OpenSSL
-if(OS_WINDOWS)
-  include(cmake/windows/wingetssl.cmake)
-endif()
 
 if(${GIT_TAG} STREQUAL "GIT-NOTFOUND")
   set(GIT_TAG ${PROJECT_VERSION})
@@ -104,10 +107,30 @@ target_sources(
           lib/macro/macro-action-edit.hpp
           lib/macro/macro-action-factory.cpp
           lib/macro/macro-action-factory.hpp
+          lib/macro/macro-action-loop.cpp
+          lib/macro/macro-action-loop.hpp
           lib/macro/macro-action-macro.cpp
           lib/macro/macro-action-macro.hpp
           lib/macro/macro-action-queue.cpp
           lib/macro/macro-action-queue.hpp
+          lib/macro/macro-action-variable-basic.cpp
+          lib/macro/macro-action-variable-basic.hpp
+          lib/macro/macro-action-variable-group.cpp
+          lib/macro/macro-action-variable-group.hpp
+          lib/macro/macro-action-variable-input.cpp
+          lib/macro/macro-action-variable-input.hpp
+          lib/macro/macro-action-variable-json.cpp
+          lib/macro/macro-action-variable-json.hpp
+          lib/macro/macro-action-variable-macro.cpp
+          lib/macro/macro-action-variable-macro.hpp
+          lib/macro/macro-action-variable-math.cpp
+          lib/macro/macro-action-variable-math.hpp
+          lib/macro/macro-action-variable-scene.cpp
+          lib/macro/macro-action-variable-scene.hpp
+          lib/macro/macro-action-variable-string.cpp
+          lib/macro/macro-action-variable-string.hpp
+          lib/macro/macro-action-variable-time.cpp
+          lib/macro/macro-action-variable-time.hpp
           lib/macro/macro-action-variable.cpp
           lib/macro/macro-action-variable.hpp
           lib/macro/macro-action.cpp
@@ -139,8 +162,14 @@ target_sources(
           lib/macro/macro-export-extensions.hpp
           lib/macro/macro-export-import-dialog.cpp
           lib/macro/macro-export-import-dialog.hpp
+          lib/macro/macro-export-prompts-dialog.cpp
+          lib/macro/macro-export-prompts-dialog.hpp
           lib/macro/macro-helpers.cpp
           lib/macro/macro-helpers.hpp
+          lib/macro/macro-import-prompts.cpp
+          lib/macro/macro-import-prompts.hpp
+          lib/macro/macro-import-prompts-dialog.cpp
+          lib/macro/macro-import-prompts-dialog.hpp
           lib/macro/macro-input.cpp
           lib/macro/macro-input.hpp
           lib/macro/macro-list.cpp
@@ -168,6 +197,8 @@ target_sources(
           lib/macro/macro-signals.hpp
           lib/macro/macro-tab.cpp
           lib/macro/macro-tree.cpp
+          lib/macro/macro-undo-redo.cpp
+          lib/macro/macro-undo-redo.hpp
           lib/macro/macro-tree.hpp
           lib/macro/macro-websocket-trigger.cpp
           lib/macro/macro.cpp
@@ -209,6 +240,13 @@ target_sources(
           lib/utils/filter-combo-box.hpp
           lib/utils/first-run-wizard.cpp
           lib/utils/first-run-wizard.hpp
+          lib/utils/first-run-wizard-audio.cpp
+          lib/utils/first-run-wizard-audio.hpp
+          lib/utils/first-run-wizard-helpers.hpp
+          lib/utils/first-run-wizard-sequence.cpp
+          lib/utils/first-run-wizard-sequence.hpp
+          lib/utils/first-run-wizard-window.cpp
+          lib/utils/first-run-wizard-window.hpp
           lib/utils/help-icon.hpp
           lib/utils/help-icon.cpp
           lib/utils/item-selection-helpers.cpp
@@ -287,14 +325,22 @@ target_sources(
           lib/utils/ui-helpers.hpp
           lib/utils/utility.cpp
           lib/utils/utility.hpp
+          lib/utils/value-input.cpp
+          lib/utils/value-input.hpp
           lib/utils/volume-control.cpp
           lib/utils/volume-control.hpp
           lib/utils/websocket-api.cpp
           lib/utils/websocket-api.hpp
+          lib/variables/variable-color-button.cpp
+          lib/variables/variable-color-button.hpp
+          lib/variables/variable-color.cpp
+          lib/variables/variable-color.hpp
           lib/variables/variable-line-edit.cpp
           lib/variables/variable-line-edit.hpp
           lib/variables/variable-number.hpp
           lib/variables/variable-number.tpp
+          lib/variables/variable-ref.cpp
+          lib/variables/variable-ref.hpp
           lib/variables/variable-spinbox.cpp
           lib/variables/variable-spinbox.hpp
           lib/variables/variable-string.cpp
@@ -303,6 +349,8 @@ target_sources(
           lib/variables/variable-tab.hpp
           lib/variables/variable-text-edit.cpp
           lib/variables/variable-text-edit.hpp
+          lib/variables/variable-usage.cpp
+          lib/variables/variable-usage.hpp
           lib/variables/variable.cpp
           lib/variables/variable.hpp)
 
@@ -363,9 +411,22 @@ set_target_properties(${LIB_NAME} PROPERTIES CXX_VISIBILITY_PRESET hidden)
 target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_17)
 target_compile_features(${LIB_NAME} PUBLIC cxx_std_17)
 
+target_precompile_headers(${LIB_NAME} PRIVATE
+                          "${CMAKE_CURRENT_SOURCE_DIR}/lib/pch.hpp")
+
 target_include_directories(
-  ${LIB_NAME} PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/deps/obs-websocket/lib"
-                     "${CMAKE_CURRENT_SOURCE_DIR}/deps/exprtk")
+  ${LIB_NAME} PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/deps/obs-websocket/lib")
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/deps/exprtk/exprtk.hpp")
+  target_include_directories(${LIB_NAME}
+                             PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/deps/exprtk")
+  target_compile_definitions(${LIB_NAME} PRIVATE EXPRTK_SUPPORT=1)
+else()
+  message(
+    STATUS
+      "${PROJECT_NAME}: deps/exprtk not found - math expression support disabled"
+  )
+endif()
 
 if(NOT nlohmann_json_DIR
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/deps/json/CMakeLists.txt")
@@ -540,3 +601,59 @@ else()
     set_target_properties_obs(${PROJECT_NAME} PROPERTIES PREFIX "")
   endif()
 endif()
+
+# --- Install third-party dependency licenses ---
+#
+# Each entry is "display-name:path/to/license/file" relative to deps/. Files are
+# silently skipped when a submodule is not checked out.
+set(_dep_license_files
+    "asio:asio/asio/LICENSE_1_0.txt"
+    "cpp-httplib:cpp-httplib/LICENSE"
+    "json:json/LICENSE.MIT"
+    "jsoncons:jsoncons/LICENSE"
+    "leptonica:leptonica/leptonica-license.txt"
+    "libremidi:libremidi/LICENSE.md"
+    "libusb:libusb/COPYING"
+    "opencv:opencv/LICENSE"
+    "openvr:openvr/LICENSE"
+    "paho-mqtt:paho.mqtt.cpp/LICENSE"
+    "tesseract:tesseract/LICENSE"
+    "websocketpp:websocketpp/COPYING"
+    "whisper:whisper.cpp/LICENSE")
+
+if(DEB_INSTALL)
+  if(NOT DATA_OUT_DIR)
+    set(DATA_OUT_DIR "/share/obs/obs-plugins/${PROJECT_NAME}")
+  endif()
+  set(_license_dest "${CMAKE_INSTALL_PREFIX}/${DATA_OUT_DIR}/licenses")
+elseif(OS_MACOS)
+  # macOS: license files become bundle Resources/licenses/* entries
+  set(_license_dest "")
+else()
+  # Windows and non-DEB Linux: alongside the plugin's data directory
+  set(_license_dest "${CMAKE_PROJECT_NAME}/data/licenses")
+endif()
+
+foreach(_entry IN LISTS _dep_license_files)
+  string(REGEX MATCH "^([^:]+):(.+)$" _m "${_entry}")
+  set(_dep_name "${CMAKE_MATCH_1}")
+  set(_dep_file "${CMAKE_CURRENT_SOURCE_DIR}/deps/${CMAKE_MATCH_2}")
+
+  if(NOT EXISTS "${_dep_file}")
+    continue()
+  endif()
+
+  if(OS_MACOS)
+    # Copy to binary dir so we can give the file a clean name
+    set(_staged "${CMAKE_CURRENT_BINARY_DIR}/licenses/LICENSE-${_dep_name}")
+    configure_file("${_dep_file}" "${_staged}" COPYONLY)
+    target_sources(${PROJECT_NAME} PRIVATE "${_staged}")
+    set_source_files_properties("${_staged}" PROPERTIES MACOSX_PACKAGE_LOCATION
+                                                        "Resources/licenses")
+  else()
+    install(
+      FILES "${_dep_file}"
+      DESTINATION "${_license_dest}"
+      RENAME "LICENSE-${_dep_name}")
+  endif()
+endforeach()

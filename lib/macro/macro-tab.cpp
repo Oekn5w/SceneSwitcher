@@ -2,10 +2,12 @@
 #include "macro-action-edit.hpp"
 #include "macro-condition-edit.hpp"
 #include "macro-export-import-dialog.hpp"
-#include "macro-settings.hpp"
+#include "macro-helpers.hpp"
 #include "macro-search.hpp"
+#include "macro-settings.hpp"
 #include "macro-signals.hpp"
 #include "macro-tree.hpp"
+#include "macro-undo-redo.hpp"
 #include "macro.hpp"
 #include "math-helpers.hpp"
 #include "name-dialog.hpp"
@@ -17,6 +19,7 @@
 #include "version.h"
 
 #include <obs-frontend-api.h>
+
 #include <QColor>
 #include <QMenu>
 
@@ -120,6 +123,7 @@ void AdvSceneSwitcher::on_macroAdd_clicked()
 		ui->macros->Add(newMacro);
 		MacroSignalManager::Instance()->Add(
 			QString::fromStdString(name));
+		RegisterMacroAddUndoRedo(name);
 		return;
 	}
 
@@ -129,6 +133,7 @@ void AdvSceneSwitcher::on_macroAdd_clicked()
 		ui->macros->AddToGroup(newMacro, selectedMacro);
 		MacroSignalManager::Instance()->Add(
 			QString::fromStdString(name));
+		RegisterMacroAddUndoRedo(name);
 		return;
 	}
 
@@ -137,35 +142,14 @@ void AdvSceneSwitcher::on_macroAdd_clicked()
 		ui->macros->Add(newMacro, selectedMacro);
 		MacroSignalManager::Instance()->Add(
 			QString::fromStdString(name));
+		RegisterMacroAddUndoRedo(name);
 		return;
 	}
 
 	Macro::PrepareMoveToGroup(selectedMacroGroup, newMacro);
 	ui->macros->Add(newMacro, selectedMacro);
 	MacroSignalManager::Instance()->Add(QString::fromStdString(name));
-}
-
-static void addGroupSubitems(std::vector<std::shared_ptr<Macro>> &macros,
-			     const std::shared_ptr<Macro> &group)
-{
-	auto subitems = GetGroupMacroEntries(group.get());
-
-	// Remove subitems which were already selected to avoid duplicates
-	for (const auto &subitem : subitems) {
-		auto it = std::find(macros.begin(), macros.end(), subitem);
-		if (it == macros.end()) {
-			continue;
-		}
-		macros.erase(it);
-	}
-
-	// Add group subitems
-	auto it = std::find(macros.begin(), macros.end(), group);
-	if (it == macros.end()) {
-		return;
-	}
-	it = std::next(it);
-	macros.insert(it, subitems.begin(), subitems.end());
+	RegisterMacroAddUndoRedo(name);
 }
 
 void AdvSceneSwitcher::RemoveMacro(std::shared_ptr<Macro> &macro)
@@ -184,13 +168,13 @@ void AdvSceneSwitcher::RemoveMacro(std::shared_ptr<Macro> &macro)
 	}
 
 	if (macro->IsGroup()) {
-		std::vector<std::shared_ptr<Macro>> macros = {macro};
-		addGroupSubitems(macros, macro);
-		for (auto macro : macros) {
-			ui->macroEdit->ClearSegmentWidgetCacheFor(macro.get());
-		}
+		RegisterGroupDeleteUndoRedo(macro.get());
 	} else {
-		ui->macroEdit->ClearSegmentWidgetCacheFor(macro.get());
+		RegisterMacroRemoveUndoRedo(macro.get());
+	}
+
+	for (const auto &m : GetMacrosWithGroupContents({macro})) {
+		ui->macroEdit->ClearSegmentWidgetCacheFor(m.get());
 	}
 
 	// Don't cache widgets for about to be deleted macros
@@ -203,7 +187,7 @@ void AdvSceneSwitcher::RemoveMacro(std::shared_ptr<Macro> &macro)
 
 void AdvSceneSwitcher::RemoveSelectedMacros()
 {
-	auto macros = GetSelectedMacros();
+	auto macros = GetOutermostMacros(GetSelectedMacros());
 	if (macros.empty()) {
 		return;
 	}
@@ -239,13 +223,16 @@ void AdvSceneSwitcher::RemoveSelectedMacros()
 void AdvSceneSwitcher::RenameMacro(std::shared_ptr<Macro> &macro,
 				   const QString &name)
 {
-	auto oldName = QString::fromStdString(macro->Name());
+	const std::string oldName = macro->Name();
+	const std::string newName = name.toStdString();
 	{
 		auto lock = LockContext();
-		macro->SetName(name.toStdString());
+		macro->SetName(newName);
 	}
 
-	MacroSignalManager::Instance()->Rename(oldName, name);
+	RegisterMacroRenameUndoRedo(oldName, newName);
+	MacroSignalManager::Instance()->Rename(QString::fromStdString(oldName),
+					       name);
 }
 
 void AdvSceneSwitcher::on_macroRemove_clicked()
@@ -299,13 +286,7 @@ void AdvSceneSwitcher::RenameSelectedMacro()
 
 void AdvSceneSwitcher::ExportMacros() const
 {
-	auto selectedMacros = GetSelectedMacros();
-	auto macros = selectedMacros;
-	for (const auto &macro : selectedMacros) {
-		if (macro->IsGroup() && macro->GroupSize() > 0) {
-			addGroupSubitems(macros, macro);
-		}
-	}
+	const auto macros = GetMacrosWithGroupContents(GetSelectedMacros());
 
 	OBSDataAutoRelease data = obs_data_create();
 	OBSDataArrayAutoRelease macroArray = obs_data_array_create();
@@ -317,7 +298,7 @@ void AdvSceneSwitcher::ExportMacros() const
 	obs_data_set_array(data, "macros", macroArray);
 	obs_data_set_string(data, "version", g_GIT_TAG);
 
-	MacroExportImportDialog::ExportMacros(data);
+	MacroExportImportDialog::ExportMacros(data, macros);
 }
 
 bool AdvSceneSwitcher::ResolveMacroImportNameConflict(
@@ -388,55 +369,25 @@ void AdvSceneSwitcher::ImportMacros()
 	}
 
 	OBSDataArrayAutoRelease array = obs_data_get_array(data, "macros");
-	size_t count = obs_data_array_count(array);
 
-	int groupSize = 0;
-	std::shared_ptr<Macro> group;
-	std::vector<std::shared_ptr<Macro>> importedMacros;
-	auto &tempMacros = GetTemporaryMacros();
-
-	auto lock = LockContext();
-	for (size_t i = 0; i < count; i++) {
-		tempMacros.clear();
-
-		OBSDataAutoRelease array_obj = obs_data_array_item(array, i);
-		auto macro = std::make_shared<Macro>();
-		tempMacros.emplace_back(macro);
-		macro->Load(array_obj);
-		RunAndClearPostLoadSteps();
-
-		if (macroNameExists(macro->Name()) &&
-		    !ResolveMacroImportNameConflict(macro)) {
-			groupSize--;
-			continue;
-		}
-
-		importedMacros.emplace_back(macro);
-		GetTopLevelMacros().emplace_back(macro);
-		if (groupSize > 0 && !macro->IsGroup()) {
-			Macro::PrepareMoveToGroup(group, macro);
-			groupSize--;
-		}
-
-		if (macro->IsGroup()) {
-			group = macro;
-			groupSize = macro->GroupSize();
-			// We are not sure if all elements will be added so we
-			// have to reset the group size to zero and add elements
-			// to the group as they come up.
-			macro->ResetGroupSize();
-		}
-	}
-
-	for (const auto &macro : importedMacros) {
-		macro->PostLoad();
-	}
-	RunAndClearPostLoadSteps();
-	tempMacros.clear();
+	std::unique_lock<std::mutex> lock(*GetMutex());
+	const auto importedMacros = LoadImportedMacros(
+		array, [this, &lock](const std::shared_ptr<Macro> &macro) {
+			if (!macroNameExists(macro->Name())) {
+				return true;
+			}
+			lock.unlock();
+			auto renamedMacro = macro;
+			const bool resolved =
+				ResolveMacroImportNameConflict(renamedMacro);
+			lock.lock();
+			return resolved;
+		});
 
 	ui->macros->Reset(GetTopLevelMacros(),
 			  GetGlobalMacroSettings()._highlightExecuted);
 	disableAddButtonHighlight();
+	RegisterMacrosImportUndoRedo(importedMacros);
 }
 
 void AdvSceneSwitcher::on_macroName_editingFinished()
@@ -739,12 +690,21 @@ void AdvSceneSwitcher::ShowMacroContextMenu(const QPoint &pos)
 	remove->setDisabled(ui->macros->SelectionEmpty());
 	menu.addSeparator();
 
+	auto pause = menu.addAction(
+		obs_module_text("AdvSceneSwitcher.macroTab.pause"), this,
+		&AdvSceneSwitcher::PauseSelectedMacros);
+	pause->setDisabled(ui->macros->SelectionEmpty());
+
+	auto unpause = menu.addAction(
+		obs_module_text("AdvSceneSwitcher.macroTab.unpause"), this,
+		&AdvSceneSwitcher::UnpauseSelectedMacros);
+	unpause->setDisabled(ui->macros->SelectionEmpty());
+	menu.addSeparator();
+
 	auto group = menu.addAction(
 		obs_module_text("AdvSceneSwitcher.macroTab.group"), ui->macros,
 		&MacroTree::GroupSelectedItems);
-	group->setDisabled(ui->macros->GroupedItemsSelected() ||
-			   ui->macros->GroupsSelected() ||
-			   ui->macros->SelectionEmpty());
+	group->setEnabled(ui->macros->CanGroupSelection());
 
 	auto ungroup = menu.addAction(
 		obs_module_text("AdvSceneSwitcher.macroTab.ungroup"),
@@ -797,6 +757,49 @@ void AdvSceneSwitcher::CopyMacro()
 	ui->macros->Add(newMacro, macro);
 	disableAddButtonHighlight();
 	MacroSignalManager::Instance()->Add(QString::fromStdString(name));
+	RegisterMacroAddUndoRedo(name);
+}
+
+void AdvSceneSwitcher::PauseSelectedMacros()
+{
+	auto selectedMacros = GetSelectedMacros();
+	if (selectedMacros.empty()) {
+		return;
+	}
+
+	auto lock = LockContext();
+	for (const auto &macro : selectedMacros) {
+		if (macro->IsGroup()) {
+			for (const auto &subitem :
+			     GetGroupMacroEntries(macro.get())) {
+				subitem->SetPaused(true);
+			}
+		} else {
+			macro->SetPaused(true);
+		}
+	}
+	ui->macros->UpdateRunningStates();
+}
+
+void AdvSceneSwitcher::UnpauseSelectedMacros()
+{
+	auto selectedMacros = GetSelectedMacros();
+	if (selectedMacros.empty()) {
+		return;
+	}
+
+	auto lock = LockContext();
+	for (const auto &macro : selectedMacros) {
+		if (macro->IsGroup()) {
+			for (const auto &subitem :
+			     GetGroupMacroEntries(macro.get())) {
+				subitem->SetPaused(false);
+			}
+		} else {
+			macro->SetPaused(false);
+		}
+	}
+	ui->macros->UpdateRunningStates();
 }
 
 bool MacroTabIsInFocus()

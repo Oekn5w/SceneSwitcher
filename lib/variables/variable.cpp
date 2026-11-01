@@ -18,6 +18,30 @@ static std::deque<std::shared_ptr<Item>> variables;
 static std::mutex lastVariableChangeMutex;
 static std::chrono::high_resolution_clock::time_point lastVariableChange{};
 
+// When set, Variable::Value() and Variable::SetValue() operate on this context
+// instead of the global variable state. Used by action queues to isolate
+// variable reads and writes to a snapshot taken at the time the action was
+// added to the queue, so that actions can modify variables without affecting
+// the global state or other queue entries.
+thread_local static VariableContext *activeVarContext = nullptr;
+
+VariableContext CreateVariableContext()
+{
+	VariableContext context;
+	for (const auto &v : variables) {
+		const auto &var = std::dynamic_pointer_cast<Variable>(v);
+		if (var) {
+			context[var->Name()] = var->Value(false);
+		}
+	}
+	return context;
+}
+
+void SetActiveVariableContext(VariableContext *context)
+{
+	activeVarContext = context;
+}
+
 static bool setup()
 {
 	AddEarlySaveStep(SaveVariables);
@@ -76,6 +100,14 @@ void Variable::Save(obs_data_t *obj) const
 
 std::string Variable::Value(bool updateLastUsed) const
 {
+	if (activeVarContext) {
+		auto it = activeVarContext->find(Name());
+		if (it == activeVarContext->end()) {
+			return "";
+		}
+		return it->second;
+	}
+
 	std::lock_guard<std::mutex> lock(_mutex);
 	if (updateLastUsed) {
 		UpdateLastUsed();
@@ -108,16 +140,31 @@ std::optional<int> Variable::IntValue() const
 
 void Variable::SetValue(const std::string &value)
 {
-	std::lock_guard<std::mutex> lock(_mutex);
-	_previousValue = _value;
-	_value = value;
-
-	UpdateLastUsed();
-	if (_previousValue != _value) {
-		_lastChanged = std::chrono::high_resolution_clock::now();
-		++_valueChangeCount;
+	if (activeVarContext) {
+		auto it = activeVarContext->find(Name());
+		if (it == activeVarContext->end()) {
+			return;
+		}
+		it->second = value;
+		setLastVariableChangeTime();
+		return;
 	}
-	setLastVariableChangeTime();
+
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		_previousValue = _value;
+		_value = value;
+
+		UpdateLastUsed();
+		if (_previousValue != _value) {
+			_lastChanged =
+				std::chrono::high_resolution_clock::now();
+			++_valueChangeCount;
+		}
+		setLastVariableChangeTime();
+	}
+
+	_cv.notify_all();
 }
 
 void Variable::SetValue(double value)
@@ -457,11 +504,10 @@ void LoadVariables(obs_data_t *obj)
 	}
 }
 
-static void signalImportedVariables(void *varsPtr)
+static void
+signalImportedVariables(const std::vector<std::shared_ptr<Item>> &vars)
 {
-	auto vars = std::unique_ptr<std::vector<std::shared_ptr<Item>>>(
-		static_cast<std::vector<std::shared_ptr<Item>> *>(varsPtr));
-	for (const auto &var : *vars) {
+	for (const auto &var : vars) {
 		VariableSignalManager::Instance()->Add(
 			QString::fromStdString(var->Name()));
 	}
@@ -472,7 +518,7 @@ void ImportVariables(obs_data_t *data)
 	OBSDataArrayAutoRelease array = obs_data_get_array(data, "variables");
 	size_t count = obs_data_array_count(array);
 
-	auto importedVars = new std::vector<std::shared_ptr<Item>>;
+	std::vector<std::shared_ptr<Item>> importedVars;
 
 	for (size_t i = 0; i < count; i++) {
 		OBSDataAutoRelease arrayElement = obs_data_array_item(array, i);
@@ -484,10 +530,11 @@ void ImportVariables(obs_data_t *data)
 		}
 
 		GetVariables().emplace_back(var);
-		importedVars->emplace_back(var);
+		importedVars.emplace_back(var);
 	}
 
-	QueueUITask(signalImportedVariables, importedVars);
+	QueueUITask(
+		[importedVars]() { signalImportedVariables(importedVars); });
 }
 
 std::chrono::high_resolution_clock::time_point GetLastVariableChangeTime()
